@@ -9,6 +9,7 @@ export interface Chapter {
 export interface ReadingProgress {
   chapterIndex: number;
   sentenceIndex: number;
+  updatedAt?: number;
 }
 
 export interface Book {

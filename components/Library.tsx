@@ -1,5 +1,6 @@
 "use client";
 
+import { formatReadingProgress, getReadingPercent } from "@/lib/progress";
 import type { Book } from "@/lib/types";
 
 interface LibraryProps {
@@ -76,7 +77,11 @@ export function Library({
         </div>
       ) : (
         <ul className="library__list">
-          {books.map((book) => (
+          {books.map((book) => {
+            const resumeLabel = formatReadingProgress(book);
+            const percent = getReadingPercent(book);
+
+            return (
             <li key={book.id} className="library__item">
               <button
                 type="button"
@@ -94,6 +99,15 @@ export function Library({
                   <span className="library__item-meta">
                     {book.chapters.length} chương · {formatDate(book.addedAt)}
                   </span>
+                  {resumeLabel && (
+                    <span className="library__item-resume">{resumeLabel}</span>
+                  )}
+                  {percent > 0 && (
+                    <span
+                      className="library__item-progress-bar"
+                      style={{ width: `${percent}%` }}
+                    />
+                  )}
                 </div>
               </button>
               <button
@@ -105,7 +119,8 @@ export function Library({
                 ✕
               </button>
             </li>
-          ))}
+            );
+          })}
         </ul>
       )}
     </div>

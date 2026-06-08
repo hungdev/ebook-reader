@@ -283,6 +283,22 @@ body {
   color: var(--muted);
 }
 
+.library__item-resume {
+  font-size: 0.78rem;
+  color: var(--accent);
+  font-weight: 500;
+  margin-top: 0.15rem;
+}
+
+.library__item-progress-bar {
+  display: block;
+  height: 3px;
+  margin-top: 0.5rem;
+  border-radius: 999px;
+  background: var(--accent);
+  max-width: 100%;
+}
+
 .library__item-delete {
   display: flex;
   align-items: center;
@@ -632,6 +648,13 @@ body {
   background: var(--highlight);
   box-shadow: 0 0 0 2px var(--highlight-border);
   border-radius: 4px;
+}
+
+.reader__sentence--resume {
+  background: var(--accent-light);
+  box-shadow: inset 3px 0 0 var(--accent);
+  border-radius: 4px;
+  padding-left: 0.15rem;
 }
 
 .reader__footer {

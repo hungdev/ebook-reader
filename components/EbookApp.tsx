@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parseEpub, parseTxt } from "@/lib/epub";
+import { flushProgressSave, scheduleProgressSave } from "@/lib/progress-save";
 import {
   deleteBook,
   getAllBooks,
+  getBook,
   saveBook,
-  updateProgress,
 } from "@/lib/storage";
 import type { Book } from "@/lib/types";
 import { Library } from "./Library";
@@ -22,12 +23,25 @@ export function EbookApp() {
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const activeBookIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    activeBookIdRef.current = activeBook?.id ?? null;
+  }, [activeBook?.id]);
 
   useEffect(() => {
     getAllBooks().then((loaded) => {
       setBooks(loaded);
       setIsLoading(false);
     });
+  }, []);
+
+  useEffect(() => {
+    const handleUnload = () => {
+      void flushProgressSave();
+    };
+    window.addEventListener("beforeunload", handleUnload);
+    return () => window.removeEventListener("beforeunload", handleUnload);
   }, []);
 
   const handleUpload = useCallback(async (files: FileList) => {
@@ -93,29 +107,32 @@ export function EbookApp() {
     setActiveBook((prev) => (prev?.id === id ? null : prev));
   }, []);
 
-  const handleOpen = useCallback((book: Book) => {
-    setActiveBook(book);
+  const handleOpen = useCallback(async (book: Book) => {
+    const fresh = await getBook(book.id);
+    setActiveBook(fresh ?? book);
   }, []);
 
-  const handleBack = useCallback(() => {
+  const handleBack = useCallback(async () => {
+    await flushProgressSave();
     setActiveBook(null);
   }, []);
 
   const handleProgressChange = useCallback(
-    async (chapterIndex: number, sentenceIndex: number) => {
-      if (!activeBook) return;
+    (chapterIndex: number, sentenceIndex: number) => {
+      const bookId = activeBookIdRef.current;
+      if (!bookId) return;
 
-      const updated: Book = {
-        ...activeBook,
-        progress: { chapterIndex, sentenceIndex },
-      };
-      setActiveBook(updated);
-      setBooks((prev) =>
-        prev.map((b) => (b.id === updated.id ? updated : b)),
+      const progress = { chapterIndex, sentenceIndex };
+
+      setActiveBook((prev) =>
+        prev ? { ...prev, progress } : prev,
       );
-      await updateProgress(activeBook.id, updated.progress);
+      setBooks((prev) =>
+        prev.map((b) => (b.id === bookId ? { ...b, progress } : b)),
+      );
+      scheduleProgressSave(bookId, progress);
     },
-    [activeBook],
+    [],
   );
 
   if (isLoading) {

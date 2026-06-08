@@ -23,6 +23,10 @@ interface ReaderProps {
 
 export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const autoContinueRef = useRef(false);
+  const speakNextChapterRef = useRef(false);
+  const progressRef = useRef(book.progress);
+  const hasScrolledToProgressRef = useRef(false);
 
   const [ttsMode, setTTSMode] = useState<TTSMode>(() => getSavedTTSMode());
   const chapterIndex = book.progress.chapterIndex;
@@ -33,22 +37,111 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     [chapter],
   );
 
+  useEffect(() => {
+    progressRef.current = book.progress;
+  }, [book.progress]);
+
+  const saveProgress = useCallback(
+    (nextChapterIndex: number, sentenceIndex: number) => {
+      progressRef.current = {
+        chapterIndex: nextChapterIndex,
+        sentenceIndex,
+      };
+      onProgressChange(nextChapterIndex, sentenceIndex);
+    },
+    [onProgressChange],
+  );
+
+  const scrollToSentence = useCallback((index: number, smooth = true) => {
+    const el = contentRef.current?.querySelector(
+      `[data-sentence="${index}"]`,
+    );
+    el?.scrollIntoView({
+      behavior: smooth ? "smooth" : "auto",
+      block: "center",
+    });
+  }, []);
+
+  useEffect(() => {
+    hasScrolledToProgressRef.current = false;
+  }, [book.id]);
+
+  useEffect(() => {
+    if (hasScrolledToProgressRef.current || sentences.length === 0) return;
+
+    const targetIndex = Math.min(
+      book.progress.sentenceIndex,
+      sentences.length - 1,
+    );
+
+    const timer = window.setTimeout(() => {
+      scrollToSentence(targetIndex, false);
+      hasScrolledToProgressRef.current = true;
+    }, 50);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    book.id,
+    book.progress.sentenceIndex,
+    chapterIndex,
+    sentences.length,
+    scrollToSentence,
+  ]);
+
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container || sentences.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (autoContinueRef.current) return;
+
+        let bestIndex = -1;
+        let bestRatio = 0;
+
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const index = Number.parseInt(
+            (entry.target as HTMLElement).dataset.sentence ?? "-1",
+            10,
+          );
+          if (index < 0) continue;
+          if (entry.intersectionRatio >= bestRatio) {
+            bestRatio = entry.intersectionRatio;
+            bestIndex = index;
+          }
+        }
+
+        if (bestIndex >= 0) {
+          saveProgress(chapterIndex, bestIndex);
+        }
+      },
+      { threshold: [0.35, 0.5, 0.75] },
+    );
+
+    container.querySelectorAll("[data-sentence]").forEach((el) => {
+      observer.observe(el);
+    });
+
+    return () => observer.disconnect();
+  }, [chapterIndex, saveProgress, sentences.length]);
+
   const handleSentenceChange = useCallback(
     (index: number) => {
-      onProgressChange(chapterIndex, index);
-      const el = contentRef.current?.querySelector(
-        `[data-sentence="${index}"]`,
-      );
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      saveProgress(chapterIndex, index);
+      scrollToSentence(index);
     },
-    [chapterIndex, onProgressChange],
+    [chapterIndex, saveProgress, scrollToSentence],
   );
 
   const handleComplete = useCallback(() => {
-    if (chapterIndex < book.chapters.length - 1) {
-      onProgressChange(chapterIndex + 1, 0);
+    if (autoContinueRef.current && chapterIndex < book.chapters.length - 1) {
+      speakNextChapterRef.current = true;
+      saveProgress(chapterIndex + 1, 0);
+    } else {
+      autoContinueRef.current = false;
     }
-  }, [book.chapters.length, chapterIndex, onProgressChange]);
+  }, [book.chapters.length, chapterIndex, saveProgress]);
 
   const systemSpeech = useSpeech({
     onSentenceChange: handleSentenceChange,
@@ -74,13 +167,30 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   );
 
   const handleModeChange = (mode: TTSMode) => {
+    autoContinueRef.current = false;
+    speakNextChapterRef.current = false;
     activeSpeech.stop();
     setTTSMode(mode);
     saveTTSMode(mode);
   };
 
+  const handleStop = useCallback(() => {
+    saveProgress(chapterIndex, activeSpeech.currentSentenceIndex);
+    autoContinueRef.current = false;
+    speakNextChapterRef.current = false;
+    stopSystem();
+    stopOnline();
+  }, [
+    activeSpeech.currentSentenceIndex,
+    chapterIndex,
+    saveProgress,
+    stopOnline,
+    stopSystem,
+  ]);
+
   const handlePlay = () => {
     if (!chapter) return;
+    autoContinueRef.current = true;
     if (ttsMode === "online") {
       unlockAudioPlayback();
     }
@@ -88,14 +198,39 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   };
 
   const goToChapter = (index: number) => {
+    autoContinueRef.current = false;
+    speakNextChapterRef.current = false;
     activeSpeech.stop();
-    onProgressChange(index, 0);
+    saveProgress(index, 0);
   };
+
+  const handleBack = () => {
+    saveProgress(
+      progressRef.current.chapterIndex,
+      progressRef.current.sentenceIndex,
+    );
+    onBack();
+  };
+
+  const onlineSpeak = onlineSpeech.speak;
+  const systemSpeak = systemSpeech.speak;
+
+  useEffect(() => {
+    if (!speakNextChapterRef.current || !chapter) return;
+
+    speakNextChapterRef.current = false;
+    if (ttsMode === "online") {
+      unlockAudioPlayback();
+      onlineSpeak(chapter.content, 0);
+    } else {
+      systemSpeak(chapter.content, 0);
+    }
+  }, [chapterIndex, chapter, ttsMode, onlineSpeak, systemSpeak]);
 
   if (!chapter) {
     return (
       <div className="reader">
-        <button type="button" className="btn btn--ghost" onClick={onBack}>
+        <button type="button" className="btn btn--ghost" onClick={handleBack}>
           ← Thư viện
         </button>
         <p>Không tìm thấy chương.</p>
@@ -106,7 +241,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   return (
     <div className="reader">
       <header className="reader__header">
-        <button type="button" className="btn btn--ghost" onClick={onBack}>
+        <button type="button" className="btn btn--ghost" onClick={handleBack}>
           ← Thư viện
         </button>
         <div className="reader__meta">
@@ -144,15 +279,20 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
               key={i}
               data-sentence={i}
               className={
-                activeSpeech.isPlaying &&
-                i >= activeSpeech.currentSentenceIndex &&
-                i <= activeSpeech.highlightEndIndex
-                  ? "reader__sentence reader__sentence--active"
-                  : "reader__sentence"
+                i === book.progress.sentenceIndex &&
+                !activeSpeech.isPlaying
+                  ? "reader__sentence reader__sentence--resume"
+                  : activeSpeech.isPlaying &&
+                      i >= activeSpeech.currentSentenceIndex &&
+                      i <= activeSpeech.highlightEndIndex
+                    ? "reader__sentence reader__sentence--active"
+                    : "reader__sentence"
               }
               onClick={() => {
+                autoContinueRef.current = false;
+                speakNextChapterRef.current = false;
                 activeSpeech.stop();
-                onProgressChange(chapterIndex, i);
+                saveProgress(chapterIndex, i);
               }}
             >
               {sentence}{" "}
@@ -202,7 +342,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
         onPlay={handlePlay}
         onPause={activeSpeech.pause}
         onResume={activeSpeech.resume}
-        onStop={activeSpeech.stop}
+        onStop={handleStop}
         onRefreshVoices={systemSpeech.refreshVoices}
       />
     </div>
