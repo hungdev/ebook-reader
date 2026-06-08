@@ -4,12 +4,17 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parseEpub, parseTxt } from "@/lib/epub";
 import { flushProgressSave, scheduleProgressSave } from "@/lib/progress-save";
 import {
+  clearLastBookId,
+  getLastBookId,
+  saveLastBookId,
+} from "@/lib/reading-session";
+import {
   deleteBook,
   getAllBooks,
   getBook,
   saveBook,
 } from "@/lib/storage";
-import type { Book } from "@/lib/types";
+import type { Book, ReadingProgress } from "@/lib/types";
 import { Library } from "./Library";
 import { Reader } from "./Reader";
 
@@ -30,18 +35,43 @@ export function EbookApp() {
   }, [activeBook?.id]);
 
   useEffect(() => {
-    getAllBooks().then((loaded) => {
+    const init = async () => {
+      const loaded = await getAllBooks();
       setBooks(loaded);
+
+      const lastBookId = getLastBookId();
+      if (lastBookId) {
+        const fresh = await getBook(lastBookId);
+        if (fresh) {
+          setActiveBook(fresh);
+        } else {
+          clearLastBookId();
+        }
+      }
+
       setIsLoading(false);
-    });
+    };
+
+    void init();
   }, []);
 
   useEffect(() => {
-    const handleUnload = () => {
+    const saveOnExit = () => {
       void flushProgressSave();
     };
-    window.addEventListener("beforeunload", handleUnload);
-    return () => window.removeEventListener("beforeunload", handleUnload);
+
+    window.addEventListener("pagehide", saveOnExit);
+    window.addEventListener("beforeunload", saveOnExit);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        saveOnExit();
+      }
+    });
+
+    return () => {
+      window.removeEventListener("pagehide", saveOnExit);
+      window.removeEventListener("beforeunload", saveOnExit);
+    };
   }, []);
 
   const handleUpload = useCallback(async (files: FileList) => {
@@ -105,24 +135,28 @@ export function EbookApp() {
     await deleteBook(id);
     setBooks((prev) => prev.filter((b) => b.id !== id));
     setActiveBook((prev) => (prev?.id === id ? null : prev));
+    if (getLastBookId() === id) {
+      clearLastBookId();
+    }
   }, []);
 
   const handleOpen = useCallback(async (book: Book) => {
     const fresh = await getBook(book.id);
-    setActiveBook(fresh ?? book);
+    const opened = fresh ?? book;
+    saveLastBookId(opened.id);
+    setActiveBook(opened);
   }, []);
 
   const handleBack = useCallback(async () => {
     await flushProgressSave();
+    clearLastBookId();
     setActiveBook(null);
   }, []);
 
   const handleProgressChange = useCallback(
-    (chapterIndex: number, sentenceIndex: number) => {
+    (progress: ReadingProgress, immediate = false) => {
       const bookId = activeBookIdRef.current;
       if (!bookId) return;
-
-      const progress = { chapterIndex, sentenceIndex };
 
       setActiveBook((prev) =>
         prev ? { ...prev, progress } : prev,
@@ -130,7 +164,7 @@ export function EbookApp() {
       setBooks((prev) =>
         prev.map((b) => (b.id === bookId ? { ...b, progress } : b)),
       );
-      scheduleProgressSave(bookId, progress);
+      scheduleProgressSave(bookId, progress, immediate);
     },
     [],
   );

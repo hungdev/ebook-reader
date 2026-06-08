@@ -7,16 +7,22 @@ let pending: { id: string; progress: ReadingProgress } | null = null;
 export function scheduleProgressSave(
   id: string,
   progress: ReadingProgress,
+  immediate = false,
 ): void {
   pending = {
     id,
     progress: { ...progress, updatedAt: Date.now() },
   };
 
+  if (immediate) {
+    void flushProgressSave();
+    return;
+  }
+
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
     void flushProgressSave();
-  }, 400);
+  }, 300);
 }
 
 export async function flushProgressSave(): Promise<void> {

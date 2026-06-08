@@ -10,6 +10,7 @@ export interface ReadingProgress {
   chapterIndex: number;
   sentenceIndex: number;
   updatedAt?: number;
+  wasListening?: boolean;
 }
 
 export interface Book {
