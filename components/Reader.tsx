@@ -27,6 +27,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const speakNextChapterRef = useRef(false);
   const progressRef = useRef(book.progress);
   const scrollObserverRef = useRef<IntersectionObserver | null>(null);
+  const scrollSaveTimerRef = useRef<number | null>(null);
 
   const [ttsMode, setTTSMode] = useState<TTSMode>(() => getSavedTTSMode());
   const [showResumePrompt, setShowResumePrompt] = useState(
@@ -74,20 +75,28 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   }, []);
 
   useEffect(() => {
+    if (sentences.length === 0) return;
+
+    const targetIndex = Math.min(
+      progressRef.current.sentenceIndex,
+      sentences.length - 1,
+    );
+
+    const timer = window.setTimeout(() => {
+      scrollToSentence(targetIndex, false);
+    }, 150);
+
+    return () => window.clearTimeout(timer);
+  }, [book.id, chapterIndex, sentences.length, scrollToSentence]);
+
+  useEffect(() => {
     scrollObserverRef.current?.disconnect();
     scrollObserverRef.current = null;
 
     const container = contentRef.current;
     if (!container || sentences.length === 0) return;
 
-    const targetIndex = Math.min(
-      book.progress.sentenceIndex,
-      sentences.length - 1,
-    );
-
     const timer = window.setTimeout(() => {
-      scrollToSentence(targetIndex, false);
-
       const observer = new IntersectionObserver(
         (entries) => {
           if (autoContinueRef.current) return;
@@ -108,32 +117,44 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
             }
           }
 
-          if (bestIndex >= 0) {
-            saveProgress(chapterIndex, bestIndex, { wasListening: false });
+          if (bestIndex < 0) return;
+
+          progressRef.current = {
+            ...progressRef.current,
+            chapterIndex,
+            sentenceIndex: bestIndex,
+            wasListening: false,
+          };
+
+          if (scrollSaveTimerRef.current) {
+            window.clearTimeout(scrollSaveTimerRef.current);
           }
+
+          scrollSaveTimerRef.current = window.setTimeout(() => {
+            onProgressChange(
+              { ...progressRef.current },
+              false,
+            );
+          }, 800);
         },
-        { threshold: [0.35, 0.5, 0.75] },
+        { threshold: [0.5] },
       );
 
       container.querySelectorAll("[data-sentence]").forEach((el) => {
         observer.observe(el);
       });
       scrollObserverRef.current = observer;
-    }, 150);
+    }, 500);
 
     return () => {
       window.clearTimeout(timer);
+      if (scrollSaveTimerRef.current) {
+        window.clearTimeout(scrollSaveTimerRef.current);
+      }
       scrollObserverRef.current?.disconnect();
       scrollObserverRef.current = null;
     };
-  }, [
-    book.id,
-    book.progress.sentenceIndex,
-    chapterIndex,
-    saveProgress,
-    sentences.length,
-    scrollToSentence,
-  ]);
+  }, [book.id, chapterIndex, onProgressChange, sentences.length]);
 
   const handleSentenceChange = useCallback(
     (index: number) => {
