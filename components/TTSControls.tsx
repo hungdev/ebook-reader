@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { detectPlatform } from "@/lib/tts";
 import type { OnlineVoiceOption, SpeechVoiceOption, TTSMode } from "@/lib/types";
 
@@ -26,6 +27,22 @@ interface TTSControlsProps {
   onRefreshVoices?: () => void;
 }
 
+function getVoiceLabel(
+  mode: TTSMode,
+  onlineVoices: OnlineVoiceOption[],
+  selectedVoiceId: string,
+  systemVoices: SpeechVoiceOption[],
+  selectedVoiceURI: string,
+): string {
+  if (mode === "online") {
+    return onlineVoices.find((v) => v.id === selectedVoiceId)?.label ?? "Giọng AI";
+  }
+  return (
+    systemVoices.find((v) => v.voice.voiceURI === selectedVoiceURI)?.label ??
+    "Giọng máy"
+  );
+}
+
 export function TTSControls({
   mode,
   onModeChange,
@@ -48,161 +65,209 @@ export function TTSControls({
   onStop,
   onRefreshVoices,
 }: TTSControlsProps) {
+  const [expanded, setExpanded] = useState(false);
   const platform = detectPlatform();
-  const viSystemVoices = systemVoices.filter((v) =>
-    v.voice.lang.startsWith("vi"),
+  const voiceLabel = getVoiceLabel(
+    mode,
+    onlineVoices,
+    selectedVoiceId,
+    systemVoices,
+    selectedVoiceURI,
   );
 
+  const statusLabel = error
+    ? "Lỗi"
+    : isLoading
+      ? "Đang tải..."
+      : isPlaying
+        ? isPaused
+          ? "Tạm dừng"
+          : "Đang đọc"
+        : "Sẵn sàng";
+
   return (
-    <div className="tts-controls">
-      <div className="tts-controls__header">
-        <span className="tts-controls__title">Đọc thành tiếng</span>
-        {mode === "online" && (
-          <span className="tts-controls__badge">Giọng AI chất lượng cao</span>
-        )}
-      </div>
+    <div className={`tts-player${expanded ? " tts-player--expanded" : ""}`}>
+      {expanded && (
+        <div className="tts-player__panel" id="tts-settings-panel">
+          <div className="tts-player__segmented" role="group" aria-label="Chế độ giọng">
+            <button
+              type="button"
+              className={
+                mode === "online"
+                  ? "tts-player__segment tts-player__segment--active"
+                  : "tts-player__segment"
+              }
+              onClick={() => onModeChange("online")}
+            >
+              AI trực tuyến
+            </button>
+            <button
+              type="button"
+              className={
+                mode === "system"
+                  ? "tts-player__segment tts-player__segment--active"
+                  : "tts-player__segment"
+              }
+              onClick={() => onModeChange("system")}
+            >
+              Giọng máy
+            </button>
+          </div>
 
-      <div className="tts-controls__mode">
-        <label className="tts-controls__mode-option">
-          <input
-            type="radio"
-            name="tts-mode"
-            value="online"
-            checked={mode === "online"}
-            onChange={() => onModeChange("online")}
-          />
-          Trực tuyến (khuyên dùng)
-        </label>
-        <label className="tts-controls__mode-option">
-          <input
-            type="radio"
-            name="tts-mode"
-            value="system"
-            checked={mode === "system"}
-            onChange={() => onModeChange("system")}
-          />
-          Giọng hệ thống (offline)
-        </label>
-      </div>
+          <div className="tts-player__field">
+            <label className="tts-player__field-label" htmlFor="tts-voice">
+              Giọng đọc
+            </label>
+            {mode === "online" ? (
+              <select
+                id="tts-voice"
+                className="tts-player__select"
+                value={selectedVoiceId}
+                onChange={(e) => onOnlineVoiceChange(e.target.value)}
+              >
+                {onlineVoices.map((voice) => (
+                  <option key={voice.id} value={voice.id}>
+                    {voice.label} ({voice.gender})
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <select
+                id="tts-voice"
+                className="tts-player__select"
+                value={selectedVoiceURI}
+                onChange={(e) => onSystemVoiceChange(e.target.value)}
+                disabled={isLoadingVoices || systemVoices.length === 0}
+              >
+                {isLoadingVoices && <option value="">Đang tải...</option>}
+                {!isLoadingVoices && systemVoices.length === 0 && (
+                  <option value="">Không có giọng</option>
+                )}
+                {systemVoices.map(({ voice, label, isSiri, isEnhanced }) => (
+                  <option key={voice.voiceURI} value={voice.voiceURI}>
+                    {isSiri ? "Siri · " : isEnhanced ? "✦ " : ""}
+                    {label}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
 
-      {mode === "online" ? (
-        <p className="tts-controls__hint tts-controls__hint--positive">
-          Giọng Hoài My / Nam Minh — tự nhiên hơn giọng Linh trên iPhone. Cần
-          kết nối internet.
-        </p>
-      ) : platform === "ios" ? (
-        <p className="tts-controls__hint">
-          <strong>Lưu ý iPhone:</strong> Safari không cho web dùng giọng Siri.
-          Trên iOS thường chỉ dùng được 1 giọng tiếng Việt (Linh). Để đổi giọng
-          hệ thống: Cài đặt → Trợ năng → Nội dung được đọc → Giọng nói → Tiếng
-          Việt.
-        </p>
-      ) : null}
+          <div className="tts-player__field">
+            <div className="tts-player__field-row">
+              <label className="tts-player__field-label" htmlFor="tts-rate">
+                Tốc độ
+              </label>
+              <span className="tts-player__rate-value">{rate.toFixed(1)}x</span>
+            </div>
+            <input
+              id="tts-rate"
+              type="range"
+              className="tts-player__range"
+              min={0.5}
+              max={2}
+              step={0.1}
+              value={rate}
+              onChange={(e) => onRateChange(parseFloat(e.target.value))}
+            />
+          </div>
 
-      {mode === "system" && platform === "ios" && viSystemVoices.length <= 1 && (
-        <p className="tts-controls__hint">
-          Chỉ thấy {viSystemVoices[0]?.label ?? "Linh"}? Đây là giới hạn của
-          Safari trên iPhone — hãy chuyển sang chế độ &quot;Trực tuyến&quot; để
-          có giọng đọc tự nhiên hơn.
-        </p>
+          {mode === "system" && onRefreshVoices && (
+            <button
+              type="button"
+              className="tts-player__link"
+              onClick={onRefreshVoices}
+              disabled={isLoadingVoices}
+            >
+              Làm mới danh sách giọng
+            </button>
+          )}
+
+          {mode === "online" && (
+            <p className="tts-player__note">
+              Giọng AI tự nhiên hơn — cần internet.
+            </p>
+          )}
+
+          {mode === "system" && platform === "ios" && (
+            <p className="tts-player__note">
+              iPhone không hỗ trợ Siri trong web. Dùng chế độ AI để nghe tốt hơn.
+            </p>
+          )}
+
+          {error && (
+            <p className="tts-player__error" role="alert">
+              {error}
+            </p>
+          )}
+        </div>
       )}
 
-      <div className="tts-controls__row">
-        {mode === "online" ? (
-          <label className="tts-controls__label">
-            Giọng đọc
-            <select
-              className="tts-controls__select"
-              value={selectedVoiceId}
-              onChange={(e) => onOnlineVoiceChange(e.target.value)}
+      <div className="tts-player__bar">
+        <div className="tts-player__transport">
+          {!isPlaying ? (
+            <button
+              type="button"
+              className="tts-player__btn tts-player__btn--primary"
+              onClick={onPlay}
+              disabled={isLoading}
+              aria-label="Đọc"
             >
-              {onlineVoices.map((voice) => (
-                <option key={voice.id} value={voice.id}>
-                  {voice.label} ({voice.gender}) — {voice.lang}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : (
-          <label className="tts-controls__label">
-            Giọng đọc
-            <select
-              className="tts-controls__select"
-              value={selectedVoiceURI}
-              onChange={(e) => onSystemVoiceChange(e.target.value)}
-              disabled={isLoadingVoices || systemVoices.length === 0}
+              {isLoading ? "…" : "▶"}
+            </button>
+          ) : isPaused ? (
+            <button
+              type="button"
+              className="tts-player__btn tts-player__btn--primary"
+              onClick={onResume}
+              aria-label="Tiếp tục"
             >
-              {isLoadingVoices && (
-                <option value="">Đang tải giọng...</option>
-              )}
-              {!isLoadingVoices && systemVoices.length === 0 && (
-                <option value="">Không có giọng</option>
-              )}
-              {systemVoices.map(({ voice, label, isSiri, isEnhanced }) => (
-                <option key={voice.voiceURI} value={voice.voiceURI}>
-                  {isSiri ? "🎙 " : isEnhanced ? "✨ " : ""}
-                  {label} ({voice.lang})
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
+              ▶
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="tts-player__btn tts-player__btn--secondary"
+              onClick={onPause}
+              aria-label="Tạm dừng"
+            >
+              ⏸
+            </button>
+          )}
+          {isPlaying && (
+            <button
+              type="button"
+              className="tts-player__btn tts-player__btn--ghost"
+              onClick={onStop}
+              aria-label="Dừng"
+            >
+              ⏹
+            </button>
+          )}
+        </div>
 
-        <label className="tts-controls__label">
-          Tốc độ: {rate.toFixed(1)}x
-          <input
-            type="range"
-            className="tts-controls__range"
-            min={0.5}
-            max={2}
-            step={0.1}
-            value={rate}
-            onChange={(e) => onRateChange(parseFloat(e.target.value))}
-          />
-        </label>
-      </div>
-
-      {mode === "system" && onRefreshVoices && (
         <button
           type="button"
-          className="btn btn--ghost tts-controls__refresh"
-          onClick={onRefreshVoices}
-          disabled={isLoadingVoices}
+          className="tts-player__info"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-controls="tts-settings-panel"
         >
-          {isLoadingVoices ? "Đang tải..." : "↻ Làm mới danh sách giọng"}
+          <span className="tts-player__status">{statusLabel}</span>
+          <span className={`tts-player__meta${error ? " tts-player__meta--error" : ""}`}>
+            {error ? error : `${voiceLabel} · ${rate.toFixed(1)}x`}
+          </span>
         </button>
-      )}
 
-      {error && (
-        <p className="tts-controls__error" role="alert">
-          {error}
-        </p>
-      )}
-
-      <div className="tts-controls__buttons">
-        {!isPlaying ? (
-          <button
-            type="button"
-            className="btn btn--primary"
-            onClick={onPlay}
-            disabled={isLoading}
-          >
-            {isLoading ? "Đang tải..." : "▶ Đọc"}
-          </button>
-        ) : isPaused ? (
-          <button type="button" className="btn btn--primary" onClick={onResume}>
-            ▶ Tiếp tục
-          </button>
-        ) : (
-          <button type="button" className="btn btn--secondary" onClick={onPause}>
-            ⏸ Tạm dừng
-          </button>
-        )}
-        {isPlaying && (
-          <button type="button" className="btn btn--ghost" onClick={onStop}>
-            ⏹ Dừng
-          </button>
-        )}
+        <button
+          type="button"
+          className="tts-player__toggle"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded}
+          aria-label={expanded ? "Thu gọn cài đặt" : "Mở cài đặt"}
+        >
+          {expanded ? "▾" : "▴"}
+        </button>
       </div>
     </div>
   );

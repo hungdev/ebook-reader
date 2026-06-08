@@ -197,6 +197,7 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     isPlaying,
     isPaused,
     currentSentenceIndex,
+    highlightEndIndex: currentSentenceIndex,
     isLoadingVoices,
     refreshVoices,
     speak,

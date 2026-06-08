@@ -36,3 +36,9 @@ export interface OnlineVoiceOption {
   lang: string;
   gender: string;
 }
+
+export interface SpeechChunk {
+  text: string;
+  startIndex: number;
+  endIndex: number;
+}

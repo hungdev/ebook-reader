@@ -2,16 +2,24 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSharedAudio, unlockAudioPlayback } from "@/lib/audio-unlock";
-import { ONLINE_VOICES, splitIntoSentences } from "@/lib/tts";
+import {
+  findChunkForSentence,
+  groupSentencesIntoChunks,
+  ONLINE_VOICES,
+  splitIntoSentences,
+} from "@/lib/tts";
 import {
   getSavedOnlineVoice,
   saveOnlineVoice,
 } from "@/lib/tts-prefs";
+import type { SpeechChunk } from "@/lib/types";
 
 interface UseOnlineSpeechOptions {
   onSentenceChange?: (index: number) => void;
   onComplete?: () => void;
 }
+
+const PREFETCH_AHEAD = 2;
 
 export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
   const [selectedVoiceId, setSelectedVoiceIdState] = useState(
@@ -22,14 +30,16 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
   const [isPaused, setIsPaused] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(0);
+  const [highlightEndIndex, setHighlightEndIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
-  const sentencesRef = useRef<string[]>([]);
+  const chunksRef = useRef<SpeechChunk[]>([]);
   const rateRef = useRef(rate);
   const voiceRef = useRef(selectedVoiceId);
   const stoppedRef = useRef(false);
   const blobUrlsRef = useRef<Set<string>>(new Set());
-  const prefetchRef = useRef<{ index: number; url: string } | null>(null);
+  const prefetchMapRef = useRef<Map<number, string>>(new Map());
+  const prefetchingRef = useRef<Set<number>>(new Set());
   const optionsRef = useRef(options);
 
   useEffect(() => {
@@ -56,11 +66,17 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     }
   }, []);
 
+  const clearPrefetch = useCallback(() => {
+    prefetchMapRef.current.forEach((url) => revokeBlob(url));
+    prefetchMapRef.current.clear();
+    prefetchingRef.current.clear();
+  }, [revokeBlob]);
+
   const revokeAllBlobs = useCallback(() => {
     blobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
     blobUrlsRef.current.clear();
-    prefetchRef.current = null;
-  }, []);
+    clearPrefetch();
+  }, [clearPrefetch]);
 
   const fetchAudio = useCallback(async (text: string): Promise<string> => {
     const response = await fetch("/api/tts", {
@@ -86,37 +102,55 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     return url;
   }, []);
 
-  const prefetchSentence = useCallback(
-    (index: number) => {
-      const sentences = sentencesRef.current;
-      if (index >= sentences.length) return;
+  const prefetchChunks = useCallback(
+    (fromChunkIndex: number) => {
+      const chunks = chunksRef.current;
+      for (let offset = 0; offset <= PREFETCH_AHEAD; offset += 1) {
+        const chunkIndex = fromChunkIndex + offset;
+        if (chunkIndex >= chunks.length) break;
+        if (
+          prefetchMapRef.current.has(chunkIndex) ||
+          prefetchingRef.current.has(chunkIndex)
+        ) {
+          continue;
+        }
 
-      void fetchAudio(sentences[index]).then((url) => {
-        if (stoppedRef.current) {
-          revokeBlob(url);
-          return;
-        }
-        if (prefetchRef.current?.index === index) {
-          revokeBlob(prefetchRef.current.url);
-        }
-        prefetchRef.current = { index, url };
-      });
+        prefetchingRef.current.add(chunkIndex);
+        void fetchAudio(chunks[chunkIndex].text)
+          .then((url) => {
+            prefetchingRef.current.delete(chunkIndex);
+            if (stoppedRef.current) {
+              revokeBlob(url);
+              return;
+            }
+            const existing = prefetchMapRef.current.get(chunkIndex);
+            if (existing) revokeBlob(existing);
+            prefetchMapRef.current.set(chunkIndex, url);
+          })
+          .catch(() => {
+            prefetchingRef.current.delete(chunkIndex);
+          });
+      }
     },
     [fetchAudio, revokeBlob],
   );
 
-  const getAudioUrl = useCallback(
-    async (index: number): Promise<string> => {
-      const cached = prefetchRef.current;
-      if (cached?.index === index) {
-        prefetchRef.current = null;
-        return cached.url;
-      }
+  const takeChunkUrl = useCallback(
+    async (chunkIndex: number): Promise<string> => {
+      const cached = prefetchMapRef.current.get(chunkIndex);
       if (cached) {
-        revokeBlob(cached.url);
-        prefetchRef.current = null;
+        prefetchMapRef.current.delete(chunkIndex);
+        return cached;
       }
-      return fetchAudio(sentencesRef.current[index]);
+
+      for (const [index, url] of prefetchMapRef.current.entries()) {
+        if (index !== chunkIndex) {
+          revokeBlob(url);
+          prefetchMapRef.current.delete(index);
+        }
+      }
+
+      return fetchAudio(chunksRef.current[chunkIndex].text);
     },
     [fetchAudio, revokeBlob],
   );
@@ -141,17 +175,14 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
           cleanup();
           revokeBlob(url);
           reject(
-            new Error(
-              "Không phát được âm thanh. Hãy nhấn Đọc lại.",
-            ),
+            new Error("Không phát được âm thanh. Hãy nhấn Đọc lại."),
           );
         };
 
         audio.addEventListener("ended", onEnded);
         audio.addEventListener("error", onError);
         audio.src = url;
-        audio.load();
-        audio.play().catch((err: Error) => {
+        void audio.play().catch((err: Error) => {
           cleanup();
           revokeBlob(url);
           reject(err);
@@ -160,14 +191,14 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     [revokeBlob],
   );
 
-  const playNextRef = useRef<(index: number) => void>(() => {});
+  const playNextRef = useRef<(chunkIndex: number) => void>(() => {});
 
-  const playFromIndex = useCallback(
-    async (index: number) => {
+  const playChunk = useCallback(
+    async (chunkIndex: number) => {
       if (stoppedRef.current) return;
 
-      const sentences = sentencesRef.current;
-      if (index >= sentences.length) {
+      const chunks = chunksRef.current;
+      if (chunkIndex >= chunks.length) {
         setIsPlaying(false);
         setIsPaused(false);
         setIsLoading(false);
@@ -175,32 +206,34 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
         return;
       }
 
-      setCurrentSentenceIndex(index);
-      optionsRef.current.onSentenceChange?.(index);
-      setIsLoading(index === 0 || !prefetchRef.current);
+      const chunk = chunks[chunkIndex];
+      setCurrentSentenceIndex(chunk.startIndex);
+      setHighlightEndIndex(chunk.endIndex);
+      optionsRef.current.onSentenceChange?.(chunk.startIndex);
       setError(null);
 
+      const hasCached = prefetchMapRef.current.has(chunkIndex);
+      if (!hasCached) setIsLoading(true);
+
+      prefetchChunks(chunkIndex + 1);
+
       try {
-        const url = await getAudioUrl(index);
+        const url = await takeChunkUrl(chunkIndex);
         if (stoppedRef.current) {
           revokeBlob(url);
           return;
         }
 
-        prefetchSentence(index + 1);
         setIsLoading(false);
-
         await playUrl(url);
 
         if (!stoppedRef.current) {
-          playNextRef.current(index + 1);
+          playNextRef.current(chunkIndex + 1);
         }
       } catch (err) {
         if (!stoppedRef.current) {
           const message =
-            err instanceof Error
-              ? err.message
-              : "Lỗi đọc thành tiếng";
+            err instanceof Error ? err.message : "Lỗi đọc thành tiếng";
           setError(message);
           setIsPlaying(false);
           setIsPaused(false);
@@ -209,14 +242,14 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
         setIsLoading(false);
       }
     },
-    [getAudioUrl, playUrl, prefetchSentence, revokeBlob],
+    [playUrl, prefetchChunks, revokeBlob, takeChunkUrl],
   );
 
   useEffect(() => {
-    playNextRef.current = (index: number) => {
-      void playFromIndex(index);
+    playNextRef.current = (chunkIndex: number) => {
+      void playChunk(chunkIndex);
     };
-  }, [playFromIndex]);
+  }, [playChunk]);
 
   const speak = useCallback(
     (text: string, startIndex = 0) => {
@@ -230,15 +263,19 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
       audio.pause();
       revokeAllBlobs();
 
+      const chunks = groupSentencesIntoChunks(sentences);
+      const chunkIndex = Math.max(0, findChunkForSentence(chunks, startIndex));
+
       stoppedRef.current = false;
       setError(null);
-      sentencesRef.current = sentences;
+      chunksRef.current = chunks;
       setIsPlaying(true);
       setIsPaused(false);
 
-      void playFromIndex(startIndex);
+      prefetchChunks(chunkIndex);
+      void playChunk(chunkIndex);
     },
-    [playFromIndex, revokeAllBlobs],
+    [playChunk, prefetchChunks, revokeAllBlobs],
   );
 
   const pause = useCallback(() => {
@@ -268,6 +305,7 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     setIsPaused(false);
     setIsLoading(false);
     setCurrentSentenceIndex(0);
+    setHighlightEndIndex(0);
   }, [revokeAllBlobs]);
 
   useEffect(() => () => stop(), [stop]);
@@ -282,6 +320,7 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     isPaused,
     isLoading,
     currentSentenceIndex,
+    highlightEndIndex,
     error,
     speak,
     pause,

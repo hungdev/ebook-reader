@@ -1,4 +1,4 @@
-import type { OnlineVoiceOption, SpeechVoiceOption } from "./types";
+import type { OnlineVoiceOption, SpeechChunk, SpeechVoiceOption } from "./types";
 
 export const ONLINE_VOICES: OnlineVoiceOption[] = [
   {
@@ -49,6 +49,45 @@ export function splitIntoSentences(text: string): string[] {
   }
 
   return parts.map((s) => s.trim()).filter(Boolean);
+}
+
+export function groupSentencesIntoChunks(
+  sentences: string[],
+  maxChars = 700,
+): SpeechChunk[] {
+  if (sentences.length === 0) return [];
+
+  const chunks: SpeechChunk[] = [];
+  let i = 0;
+
+  while (i < sentences.length) {
+    let text = sentences[i];
+    const start = i;
+    let end = i;
+
+    while (
+      end + 1 < sentences.length &&
+      text.length + sentences[end + 1].length + 1 <= maxChars
+    ) {
+      end += 1;
+      text += ` ${sentences[end]}`;
+    }
+
+    chunks.push({ text, startIndex: start, endIndex: end });
+    i = end + 1;
+  }
+
+  return chunks;
+}
+
+export function findChunkForSentence(
+  chunks: SpeechChunk[],
+  sentenceIndex: number,
+): number {
+  return chunks.findIndex(
+    (chunk) =>
+      sentenceIndex >= chunk.startIndex && sentenceIndex <= chunk.endIndex,
+  );
 }
 
 function isSiriVoice(voice: SpeechSynthesisVoice): boolean {

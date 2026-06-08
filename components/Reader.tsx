@@ -136,29 +136,6 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
         </nav>
       )}
 
-      <TTSControls
-        mode={ttsMode}
-        onModeChange={handleModeChange}
-        systemVoices={systemSpeech.voices}
-        selectedVoiceURI={systemSpeech.selectedVoiceURI}
-        onSystemVoiceChange={systemSpeech.setSelectedVoiceURI}
-        onlineVoices={onlineSpeech.voices}
-        selectedVoiceId={onlineSpeech.selectedVoiceId}
-        onOnlineVoiceChange={onlineSpeech.setSelectedVoiceId}
-        rate={activeSpeech.rate}
-        onRateChange={activeSpeech.setRate}
-        isPlaying={activeSpeech.isPlaying}
-        isPaused={activeSpeech.isPaused}
-        isLoading={ttsMode === "online" ? onlineSpeech.isLoading : false}
-        isLoadingVoices={systemSpeech.isLoadingVoices}
-        error={ttsMode === "online" ? onlineSpeech.error : null}
-        onPlay={handlePlay}
-        onPause={activeSpeech.pause}
-        onResume={activeSpeech.resume}
-        onStop={activeSpeech.stop}
-        onRefreshVoices={systemSpeech.refreshVoices}
-      />
-
       <article className="reader__content" ref={contentRef}>
         <h2 className="reader__chapter-title">{chapter.title}</h2>
         <div className="reader__text">
@@ -168,7 +145,8 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
               data-sentence={i}
               className={
                 activeSpeech.isPlaying &&
-                activeSpeech.currentSentenceIndex === i
+                i >= activeSpeech.currentSentenceIndex &&
+                i <= activeSpeech.highlightEndIndex
                   ? "reader__sentence reader__sentence--active"
                   : "reader__sentence"
               }
@@ -204,6 +182,29 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
           Chương sau →
         </button>
       </footer>
+
+      <TTSControls
+        mode={ttsMode}
+        onModeChange={handleModeChange}
+        systemVoices={systemSpeech.voices}
+        selectedVoiceURI={systemSpeech.selectedVoiceURI}
+        onSystemVoiceChange={systemSpeech.setSelectedVoiceURI}
+        onlineVoices={onlineSpeech.voices}
+        selectedVoiceId={onlineSpeech.selectedVoiceId}
+        onOnlineVoiceChange={onlineSpeech.setSelectedVoiceId}
+        rate={activeSpeech.rate}
+        onRateChange={activeSpeech.setRate}
+        isPlaying={activeSpeech.isPlaying}
+        isPaused={activeSpeech.isPaused}
+        isLoading={ttsMode === "online" ? onlineSpeech.isLoading : false}
+        isLoadingVoices={systemSpeech.isLoadingVoices}
+        error={ttsMode === "online" ? onlineSpeech.error : null}
+        onPlay={handlePlay}
+        onPause={activeSpeech.pause}
+        onResume={activeSpeech.resume}
+        onStop={activeSpeech.stop}
+        onRefreshVoices={systemSpeech.refreshVoices}
+      />
     </div>
   );
 }
