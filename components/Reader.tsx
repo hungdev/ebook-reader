@@ -1,9 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { splitIntoSentences } from "@/lib/tts";
-import type { Book } from "@/lib/types";
+import {
+  getSavedTTSMode,
+  saveTTSMode,
+} from "@/lib/tts-prefs";
+import type { Book, TTSMode } from "@/lib/types";
 import { TTSControls } from "./TTSControls";
+import { useOnlineSpeech } from "@/hooks/useOnlineSpeech";
 import { useSpeech } from "@/hooks/useSpeech";
 
 interface ReaderProps {
@@ -17,6 +22,8 @@ interface ReaderProps {
 
 export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const contentRef = useRef<HTMLDivElement>(null);
+
+  const [ttsMode, setTTSMode] = useState<TTSMode>(() => getSavedTTSMode());
   const chapterIndex = book.progress.chapterIndex;
   const chapter = book.chapters[chapterIndex];
 
@@ -36,37 +43,48 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     [chapterIndex, onProgressChange],
   );
 
-  const {
-    voices,
-    selectedVoiceURI,
-    setSelectedVoiceURI,
-    rate,
-    setRate,
-    isPlaying,
-    isPaused,
-    currentSentenceIndex,
-    speak,
-    pause,
-    resume,
-    stop,
-  } = useSpeech({
+  const handleComplete = useCallback(() => {
+    if (chapterIndex < book.chapters.length - 1) {
+      onProgressChange(chapterIndex + 1, 0);
+    }
+  }, [book.chapters.length, chapterIndex, onProgressChange]);
+
+  const systemSpeech = useSpeech({
     onSentenceChange: handleSentenceChange,
-    onComplete: () => {
-      if (chapterIndex < book.chapters.length - 1) {
-        onProgressChange(chapterIndex + 1, 0);
-      }
-    },
+    onComplete: handleComplete,
   });
 
-  useEffect(() => () => stop(), [stop]);
+  const onlineSpeech = useOnlineSpeech({
+    onSentenceChange: handleSentenceChange,
+    onComplete: handleComplete,
+  });
+
+  const activeSpeech = ttsMode === "online" ? onlineSpeech : systemSpeech;
+
+  const stopSystem = systemSpeech.stop;
+  const stopOnline = onlineSpeech.stop;
+
+  useEffect(
+    () => () => {
+      stopSystem();
+      stopOnline();
+    },
+    [stopSystem, stopOnline],
+  );
+
+  const handleModeChange = (mode: TTSMode) => {
+    activeSpeech.stop();
+    setTTSMode(mode);
+    saveTTSMode(mode);
+  };
 
   const handlePlay = () => {
     if (!chapter) return;
-    speak(chapter.content, book.progress.sentenceIndex);
+    activeSpeech.speak(chapter.content, book.progress.sentenceIndex);
   };
 
   const goToChapter = (index: number) => {
-    stop();
+    activeSpeech.stop();
     onProgressChange(index, 0);
   };
 
@@ -115,17 +133,26 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       )}
 
       <TTSControls
-        voices={voices}
-        selectedVoiceURI={selectedVoiceURI}
-        onVoiceChange={setSelectedVoiceURI}
-        rate={rate}
-        onRateChange={setRate}
-        isPlaying={isPlaying}
-        isPaused={isPaused}
+        mode={ttsMode}
+        onModeChange={handleModeChange}
+        systemVoices={systemSpeech.voices}
+        selectedVoiceURI={systemSpeech.selectedVoiceURI}
+        onSystemVoiceChange={systemSpeech.setSelectedVoiceURI}
+        onlineVoices={onlineSpeech.voices}
+        selectedVoiceId={onlineSpeech.selectedVoiceId}
+        onOnlineVoiceChange={onlineSpeech.setSelectedVoiceId}
+        rate={activeSpeech.rate}
+        onRateChange={activeSpeech.setRate}
+        isPlaying={activeSpeech.isPlaying}
+        isPaused={activeSpeech.isPaused}
+        isLoading={ttsMode === "online" ? onlineSpeech.isLoading : false}
+        isLoadingVoices={systemSpeech.isLoadingVoices}
+        error={ttsMode === "online" ? onlineSpeech.error : null}
         onPlay={handlePlay}
-        onPause={pause}
-        onResume={resume}
-        onStop={stop}
+        onPause={activeSpeech.pause}
+        onResume={activeSpeech.resume}
+        onStop={activeSpeech.stop}
+        onRefreshVoices={systemSpeech.refreshVoices}
       />
 
       <article className="reader__content" ref={contentRef}>
@@ -136,12 +163,13 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
               key={i}
               data-sentence={i}
               className={
-                isPlaying && currentSentenceIndex === i
+                activeSpeech.isPlaying &&
+                activeSpeech.currentSentenceIndex === i
                   ? "reader__sentence reader__sentence--active"
                   : "reader__sentence"
               }
               onClick={() => {
-                stop();
+                activeSpeech.stop();
                 onProgressChange(chapterIndex, i);
               }}
             >

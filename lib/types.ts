@@ -21,9 +21,18 @@ export interface Book {
   progress: ReadingProgress;
 }
 
+export type TTSMode = "system" | "online";
+
 export interface SpeechVoiceOption {
   voice: SpeechSynthesisVoice;
   label: string;
   isSiri: boolean;
   isEnhanced: boolean;
+}
+
+export interface OnlineVoiceOption {
+  id: string;
+  label: string;
+  lang: string;
+  gender: string;
 }

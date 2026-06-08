@@ -386,6 +386,21 @@ body {
   font-weight: 500;
 }
 
+.tts-controls__mode {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.tts-controls__mode-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
 .tts-controls__hint {
   font-size: 0.8rem;
   color: var(--muted);
@@ -394,6 +409,25 @@ body {
   border-radius: 8px;
   margin-bottom: 0.75rem;
   line-height: 1.5;
+}
+
+.tts-controls__hint--positive {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.tts-controls__refresh {
+  margin-bottom: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.tts-controls__error {
+  font-size: 0.8rem;
+  color: var(--danger);
+  background: rgba(192, 57, 43, 0.08);
+  padding: 0.6rem 0.8rem;
+  border-radius: 8px;
+  margin-bottom: 0.75rem;
 }
 
 .tts-controls__row {

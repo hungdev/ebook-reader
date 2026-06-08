@@ -2,10 +2,17 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  applyVoiceToUtterance,
   categorizeVoices,
   getDefaultVoice,
+  loadVoicesReliably,
   splitIntoSentences,
+  warmUpSpeechSynthesis,
 } from "@/lib/tts";
+import {
+  getSavedSystemVoice,
+  saveSystemVoice,
+} from "@/lib/tts-prefs";
 import type { SpeechVoiceOption } from "@/lib/types";
 
 interface UseSpeechOptions {
@@ -15,16 +22,18 @@ interface UseSpeechOptions {
 
 export function useSpeech(options: UseSpeechOptions = {}) {
   const [voices, setVoices] = useState<SpeechVoiceOption[]>([]);
-  const [selectedVoiceURI, setSelectedVoiceURI] = useState<string>("");
+  const [selectedVoiceURI, setSelectedVoiceURIState] = useState("");
   const [rate, setRate] = useState(1);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(0);
+  const [isLoadingVoices, setIsLoadingVoices] = useState(true);
 
   const sentencesRef = useRef<string[]>([]);
   const sentenceIndexRef = useRef(0);
   const rateRef = useRef(rate);
   const voiceURIRef = useRef(selectedVoiceURI);
+  const warmedUpRef = useRef(false);
   const onSentenceChangeRef = useRef(options.onSentenceChange);
   const onCompleteRef = useRef(options.onComplete);
 
@@ -41,37 +50,82 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     voiceURIRef.current = selectedVoiceURI;
   }, [selectedVoiceURI]);
 
-  const loadVoices = useCallback(() => {
-    const available = speechSynthesis.getVoices();
-    if (available.length === 0) return;
+  const setSelectedVoiceURI = useCallback((uri: string) => {
+    setSelectedVoiceURIState(uri);
+    saveSystemVoice(uri);
+  }, []);
 
+  const refreshVoices = useCallback(async () => {
+    setIsLoadingVoices(true);
+    if (!warmedUpRef.current) {
+      warmUpSpeechSynthesis();
+      warmedUpRef.current = true;
+    }
+
+    const available = await loadVoicesReliably();
     const categorized = categorizeVoices(available);
     setVoices(categorized);
 
-    setSelectedVoiceURI((prev) => {
-      if (prev && available.some((v) => v.voiceURI === prev)) return prev;
+    const saved = getSavedSystemVoice();
+    const savedValid = saved && available.some((v) => v.voiceURI === saved);
+
+    if (savedValid) {
+      setSelectedVoiceURIState(saved);
+    } else {
       const defaultVoice = getDefaultVoice(available);
-      return defaultVoice?.voiceURI ?? available[0].voiceURI;
-    });
+      const uri = defaultVoice?.voiceURI ?? available[0]?.voiceURI ?? "";
+      setSelectedVoiceURIState(uri);
+      if (uri) saveSystemVoice(uri);
+    }
+
+    setIsLoadingVoices(false);
   }, []);
 
   useEffect(() => {
-    const handleVoicesChanged = () => loadVoices();
+    let cancelled = false;
 
-    handleVoicesChanged();
-    speechSynthesis.addEventListener("voiceschanged", handleVoicesChanged);
-    const timer = setTimeout(handleVoicesChanged, 500);
+    const load = async () => {
+      if (!warmedUpRef.current) {
+        warmUpSpeechSynthesis();
+        warmedUpRef.current = true;
+      }
+
+      const available = await loadVoicesReliably();
+      if (cancelled) return;
+
+      const categorized = categorizeVoices(available);
+      setVoices(categorized);
+
+      const saved = getSavedSystemVoice();
+      const savedValid = saved && available.some((v) => v.voiceURI === saved);
+
+      if (savedValid) {
+        setSelectedVoiceURIState(saved);
+      } else {
+        const defaultVoice = getDefaultVoice(available);
+        const uri = defaultVoice?.voiceURI ?? available[0]?.voiceURI ?? "";
+        setSelectedVoiceURIState(uri);
+        if (uri) saveSystemVoice(uri);
+      }
+
+      setIsLoadingVoices(false);
+    };
+
+    load();
 
     return () => {
-      speechSynthesis.removeEventListener("voiceschanged", handleVoicesChanged);
-      clearTimeout(timer);
-      speechSynthesis.cancel();
+      cancelled = true;
     };
-  }, [loadVoices]);
+  }, []);
 
   const speak = useCallback((text: string, startIndex = 0) => {
     const sentences = splitIntoSentences(text);
     if (sentences.length === 0) return;
+
+    if (!warmedUpRef.current) {
+      warmUpSpeechSynthesis();
+      warmedUpRef.current = true;
+    }
 
     speechSynthesis.cancel();
 
@@ -83,11 +137,7 @@ export function useSpeech(options: UseSpeechOptions = {}) {
 
     for (let i = startIndex; i < sentences.length; i++) {
       const utterance = new SpeechSynthesisUtterance(sentences[i]);
-      const voice = speechSynthesis
-        .getVoices()
-        .find((v) => v.voiceURI === voiceURIRef.current);
-      if (voice) utterance.voice = voice;
-
+      applyVoiceToUtterance(utterance, voiceURIRef.current);
       utterance.rate = rateRef.current;
       utterance.pitch = 1;
 
@@ -138,8 +188,6 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     setCurrentSentenceIndex(0);
   }, []);
 
-  const getSentenceIndex = useCallback(() => sentenceIndexRef.current, []);
-
   return {
     voices,
     selectedVoiceURI,
@@ -149,10 +197,11 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     isPlaying,
     isPaused,
     currentSentenceIndex,
+    isLoadingVoices,
+    refreshVoices,
     speak,
     pause,
     resume,
     stop,
-    getSentenceIndex,
   };
 }

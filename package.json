@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "edge-tts-universal": "^1.4.0",
     "idb": "^8.0.3",
     "jszip": "^3.10.1",
     "next": "16.2.7",
