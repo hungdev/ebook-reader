@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getSharedAudio, unlockAudioPlayback } from "@/lib/audio-unlock";
 import { ONLINE_VOICES, splitIntoSentences } from "@/lib/tts";
 import {
   getSavedOnlineVoice,
@@ -24,11 +25,11 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
   const [error, setError] = useState<string | null>(null);
 
   const sentencesRef = useRef<string[]>([]);
-  const indexRef = useRef(0);
   const rateRef = useRef(rate);
   const voiceRef = useRef(selectedVoiceId);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const stoppedRef = useRef(false);
+  const blobUrlsRef = useRef<Set<string>>(new Set());
+  const prefetchRef = useRef<{ index: number; url: string } | null>(null);
   const optionsRef = useRef(options);
 
   useEffect(() => {
@@ -48,14 +49,17 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     saveOnlineVoice(id);
   }, []);
 
-  const cleanupAudio = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      if (audioRef.current.src.startsWith("blob:")) {
-        URL.revokeObjectURL(audioRef.current.src);
-      }
-      audioRef.current = null;
+  const revokeBlob = useCallback((url: string) => {
+    if (url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+      blobUrlsRef.current.delete(url);
     }
+  }, []);
+
+  const revokeAllBlobs = useCallback(() => {
+    blobUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    blobUrlsRef.current.clear();
+    prefetchRef.current = null;
   }, []);
 
   const fetchAudio = useCallback(async (text: string): Promise<string> => {
@@ -77,10 +81,86 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     }
 
     const blob = await response.blob();
-    return URL.createObjectURL(blob);
+    const url = URL.createObjectURL(blob);
+    blobUrlsRef.current.add(url);
+    return url;
   }, []);
 
-  const playNextRef = useRef<(index: number) => Promise<void>>(async () => {});
+  const prefetchSentence = useCallback(
+    (index: number) => {
+      const sentences = sentencesRef.current;
+      if (index >= sentences.length) return;
+
+      void fetchAudio(sentences[index]).then((url) => {
+        if (stoppedRef.current) {
+          revokeBlob(url);
+          return;
+        }
+        if (prefetchRef.current?.index === index) {
+          revokeBlob(prefetchRef.current.url);
+        }
+        prefetchRef.current = { index, url };
+      });
+    },
+    [fetchAudio, revokeBlob],
+  );
+
+  const getAudioUrl = useCallback(
+    async (index: number): Promise<string> => {
+      const cached = prefetchRef.current;
+      if (cached?.index === index) {
+        prefetchRef.current = null;
+        return cached.url;
+      }
+      if (cached) {
+        revokeBlob(cached.url);
+        prefetchRef.current = null;
+      }
+      return fetchAudio(sentencesRef.current[index]);
+    },
+    [fetchAudio, revokeBlob],
+  );
+
+  const playUrl = useCallback(
+    (url: string): Promise<void> =>
+      new Promise((resolve, reject) => {
+        const audio = getSharedAudio();
+
+        const cleanup = () => {
+          audio.removeEventListener("ended", onEnded);
+          audio.removeEventListener("error", onError);
+        };
+
+        const onEnded = () => {
+          cleanup();
+          revokeBlob(url);
+          resolve();
+        };
+
+        const onError = () => {
+          cleanup();
+          revokeBlob(url);
+          reject(
+            new Error(
+              "Không phát được âm thanh. Hãy nhấn Đọc lại.",
+            ),
+          );
+        };
+
+        audio.addEventListener("ended", onEnded);
+        audio.addEventListener("error", onError);
+        audio.src = url;
+        audio.load();
+        audio.play().catch((err: Error) => {
+          cleanup();
+          revokeBlob(url);
+          reject(err);
+        });
+      }),
+    [revokeBlob],
+  );
+
+  const playNextRef = useRef<(index: number) => void>(() => {});
 
   const playFromIndex = useCallback(
     async (index: number) => {
@@ -95,42 +175,32 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
         return;
       }
 
-      indexRef.current = index;
       setCurrentSentenceIndex(index);
       optionsRef.current.onSentenceChange?.(index);
-      setIsLoading(true);
+      setIsLoading(index === 0 || !prefetchRef.current);
       setError(null);
 
       try {
-        cleanupAudio();
-        const url = await fetchAudio(sentences[index]);
+        const url = await getAudioUrl(index);
         if (stoppedRef.current) {
-          URL.revokeObjectURL(url);
+          revokeBlob(url);
           return;
         }
 
-        const audio = new Audio(url);
-        audioRef.current = audio;
+        prefetchSentence(index + 1);
+        setIsLoading(false);
 
-        await new Promise<void>((resolve, reject) => {
-          audio.onended = () => {
-            URL.revokeObjectURL(url);
-            resolve();
-          };
-          audio.onerror = () => {
-            URL.revokeObjectURL(url);
-            reject(new Error("Không phát được âm thanh"));
-          };
-          audio.play().catch(reject);
-        });
+        await playUrl(url);
 
         if (!stoppedRef.current) {
-          await playNextRef.current(index + 1);
+          playNextRef.current(index + 1);
         }
       } catch (err) {
         if (!stoppedRef.current) {
           const message =
-            err instanceof Error ? err.message : "Lỗi đọc thành tiếng";
+            err instanceof Error
+              ? err.message
+              : "Lỗi đọc thành tiếng";
           setError(message);
           setIsPlaying(false);
           setIsPaused(false);
@@ -139,53 +209,66 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
         setIsLoading(false);
       }
     },
-    [cleanupAudio, fetchAudio],
+    [getAudioUrl, playUrl, prefetchSentence, revokeBlob],
   );
 
   useEffect(() => {
-    playNextRef.current = playFromIndex;
+    playNextRef.current = (index: number) => {
+      void playFromIndex(index);
+    };
   }, [playFromIndex]);
 
   const speak = useCallback(
-    async (text: string, startIndex = 0) => {
+    (text: string, startIndex = 0) => {
       const sentences = splitIntoSentences(text);
       if (sentences.length === 0) return;
 
+      unlockAudioPlayback();
+
       stoppedRef.current = true;
-      cleanupAudio();
+      const audio = getSharedAudio();
+      audio.pause();
+      revokeAllBlobs();
+
       stoppedRef.current = false;
       setError(null);
       sentencesRef.current = sentences;
       setIsPlaying(true);
       setIsPaused(false);
-      await playFromIndex(startIndex);
+
+      void playFromIndex(startIndex);
     },
-    [cleanupAudio, playFromIndex],
+    [playFromIndex, revokeAllBlobs],
   );
 
   const pause = useCallback(() => {
-    if (audioRef.current && !audioRef.current.paused) {
-      audioRef.current.pause();
+    const audio = getSharedAudio();
+    if (!audio.paused && audio.src) {
+      audio.pause();
       setIsPaused(true);
     }
   }, []);
 
   const resume = useCallback(() => {
-    if (audioRef.current?.paused) {
-      audioRef.current.play();
-      setIsPaused(false);
+    const audio = getSharedAudio();
+    if (audio.paused && audio.src) {
+      unlockAudioPlayback();
+      void audio.play().then(() => setIsPaused(false));
     }
   }, []);
 
   const stop = useCallback(() => {
     stoppedRef.current = true;
-    cleanupAudio();
+    const audio = getSharedAudio();
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    revokeAllBlobs();
     setIsPlaying(false);
     setIsPaused(false);
     setIsLoading(false);
-    indexRef.current = 0;
     setCurrentSentenceIndex(0);
-  }, [cleanupAudio]);
+  }, [revokeAllBlobs]);
 
   useEffect(() => () => stop(), [stop]);
 

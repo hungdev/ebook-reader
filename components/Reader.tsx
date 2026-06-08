@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { unlockAudioPlayback } from "@/lib/audio-unlock";
 import { splitIntoSentences } from "@/lib/tts";
 import {
   getSavedTTSMode,
@@ -80,6 +81,9 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
 
   const handlePlay = () => {
     if (!chapter) return;
+    if (ttsMode === "online") {
+      unlockAudioPlayback();
+    }
     activeSpeech.speak(chapter.content, book.progress.sentenceIndex);
   };
 
