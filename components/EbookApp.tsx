@@ -154,6 +154,9 @@ export function EbookApp() {
     const fresh = await getBook(book.id);
     const opened: Book = fresh ?? book;
     saveLastBookId(opened.id);
+    setBooks((prev) =>
+      prev.map((b) => (b.id === opened.id ? opened : b)),
+    );
     setActiveBook(opened);
   }, []);
 

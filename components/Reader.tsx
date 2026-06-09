@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { unlockAudioPlayback } from "@/lib/audio-unlock";
 import { flushProgressSave } from "@/lib/progress-save";
+import {
+  getChunkSentenceIndex,
+  hasSavedSpeechChunk,
+  normalizeProgressForChapter,
+} from "@/lib/reading-progress";
 import { groupSentencesIntoChunks, splitIntoSentences } from "@/lib/tts";
 import {
   getSavedTTSMode,
@@ -30,6 +35,10 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const scrollObserverRef = useRef<IntersectionObserver | null>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const chapterGuardUntilRef = useRef(0);
+  const userScrollingRef = useRef(false);
+  const scrollIdleTimerRef = useRef<number | null>(null);
+  const programmaticScrollRef = useRef(false);
+  const restoreProgressRef = useRef(book.progress);
 
   const [ttsMode, setTTSMode] = useState<TTSMode>(() => getSavedTTSMode());
   const [showResumePrompt, setShowResumePrompt] = useState(
@@ -49,26 +58,49 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     [chapter],
   );
 
-  const resumeSentenceIndex = useMemo(() => {
-    if (book.progress.speechChunkIndex != null) {
-      const chunks = groupSentencesIntoChunks(sentences);
-      const chunk = chunks[book.progress.speechChunkIndex];
-      if (chunk) return chunk.startIndex;
-    }
-    return book.progress.sentenceIndex;
-  }, [
-    book.progress.sentenceIndex,
-    book.progress.speechChunkIndex,
-    sentences,
-  ]);
+  const resumeSentenceIndex = useMemo(
+    () =>
+      getChunkSentenceIndex(
+        sentences,
+        book.progress.speechChunkIndex,
+        book.progress.sentenceIndex,
+      ),
+    [
+      book.progress.sentenceIndex,
+      book.progress.speechChunkIndex,
+      sentences,
+    ],
+  );
 
   useEffect(() => {
     progressRef.current = book.progress;
   }, [book.progress]);
 
   useEffect(() => {
+    restoreProgressRef.current = book.progress;
     chapterGuardUntilRef.current = Date.now() + 3000;
-  }, [book.id]);
+  }, [book.id, chapterIndex]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      if (programmaticScrollRef.current) return;
+      userScrollingRef.current = true;
+      if (scrollIdleTimerRef.current) {
+        window.clearTimeout(scrollIdleTimerRef.current);
+      }
+      scrollIdleTimerRef.current = window.setTimeout(() => {
+        userScrollingRef.current = false;
+      }, 1000);
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (scrollIdleTimerRef.current) {
+        window.clearTimeout(scrollIdleTimerRef.current);
+      }
+    };
+  }, [book.id, chapterIndex]);
 
   const saveProgress = useCallback(
     (
@@ -104,6 +136,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   );
 
   const scrollToSentence = useCallback((index: number, smooth = true) => {
+    programmaticScrollRef.current = true;
     const el = contentRef.current?.querySelector(
       `[data-sentence="${index}"]`,
     );
@@ -111,33 +144,30 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       behavior: smooth ? "smooth" : "auto",
       block: "center",
     });
+    window.setTimeout(() => {
+      programmaticScrollRef.current = false;
+    }, 100);
   }, []);
 
   useEffect(() => {
     if (sentences.length === 0) return;
 
-    let targetIndex = book.progress.sentenceIndex;
-    if (book.progress.speechChunkIndex != null) {
-      const chunks = groupSentencesIntoChunks(sentences);
-      const chunk = chunks[book.progress.speechChunkIndex];
-      if (chunk) targetIndex = chunk.startIndex;
-    }
-
-    targetIndex = Math.min(targetIndex, sentences.length - 1);
+    const saved = restoreProgressRef.current;
+    const targetIndex = Math.min(
+      getChunkSentenceIndex(
+        sentences,
+        saved.speechChunkIndex,
+        saved.sentenceIndex,
+      ),
+      sentences.length - 1,
+    );
 
     const timer = window.setTimeout(() => {
       scrollToSentence(targetIndex, false);
     }, 150);
 
     return () => window.clearTimeout(timer);
-  }, [
-    book.id,
-    book.progress.sentenceIndex,
-    book.progress.speechChunkIndex,
-    chapterIndex,
-    sentences,
-    scrollToSentence,
-  ]);
+  }, [book.id, chapterIndex, sentences.length, scrollToSentence]);
 
   useEffect(() => {
     scrollObserverRef.current?.disconnect();
@@ -152,6 +182,8 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
           if (
             autoContinueRef.current ||
             showResumePromptRef.current ||
+            hasSavedSpeechChunk(progressRef.current) ||
+            (userScrollingRef.current && !programmaticScrollRef.current) ||
             Date.now() < chapterGuardUntilRef.current
           ) {
             return;
@@ -175,24 +207,19 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
 
           if (bestIndex < 0) return;
 
-          const nextProgress: ReadingProgress = {
-            ...progressRef.current,
-            chapterIndex,
-            sentenceIndex: bestIndex,
-            wasListening: false,
-          };
-          delete nextProgress.speechChunkIndex;
-          progressRef.current = nextProgress;
-
           if (scrollSaveTimerRef.current) {
             window.clearTimeout(scrollSaveTimerRef.current);
           }
 
           scrollSaveTimerRef.current = window.setTimeout(() => {
-            onProgressChange(
-              { ...progressRef.current },
-              false,
-            );
+            const nextProgress: ReadingProgress = {
+              ...progressRef.current,
+              chapterIndex,
+              sentenceIndex: bestIndex,
+              wasListening: false,
+            };
+            progressRef.current = nextProgress;
+            onProgressChange(nextProgress, false);
           }, 800);
         },
         { threshold: [0.5] },
@@ -377,23 +404,36 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   };
 
   const handleBack = async () => {
+    if (scrollSaveTimerRef.current) {
+      window.clearTimeout(scrollSaveTimerRef.current);
+      scrollSaveTimerRef.current = null;
+    }
+
     const chunkIdx =
       ttsMode === "online"
         ? onlineSpeech.getPlayingChunkIndex()
         : progressRef.current.speechChunkIndex;
 
     activeSpeech.stop();
+    autoContinueRef.current = false;
 
-    saveProgress(
-      progressRef.current.chapterIndex,
-      progressRef.current.sentenceIndex,
-      {
-        wasListening: false,
-        speechChunkIndex:
-          chunkIdx ?? progressRef.current.speechChunkIndex ?? null,
-        immediate: true,
-      },
-    );
+    const rawProgress: ReadingProgress = {
+      ...progressRef.current,
+      wasListening: false,
+      speechChunkIndex:
+        chunkIdx ?? progressRef.current.speechChunkIndex ?? undefined,
+    };
+
+    const normalized = chapter
+      ? normalizeProgressForChapter(chapter.content, rawProgress)
+      : rawProgress;
+
+    if (normalized.speechChunkIndex == null) {
+      delete normalized.speechChunkIndex;
+    }
+
+    progressRef.current = normalized;
+    onProgressChange(normalized, true);
     await flushProgressSave();
     onBack();
   };
@@ -463,7 +503,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
         <button
           type="button"
           className="reader__resume-banner"
-          onClick={() => startPlayback(book.progress.sentenceIndex, true)}
+          onClick={() => startPlayback(resumeSentenceIndex, true)}
         >
           <span className="reader__resume-banner-icon">▶</span>
           <span>
