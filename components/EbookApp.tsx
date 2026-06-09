@@ -20,13 +20,10 @@ import {
   getBook,
   saveBook,
 } from "@/lib/storage";
+import { generateId } from "@/lib/id";
 import type { Book, ReadingProgress } from "@/lib/types";
 import { Library } from "./Library";
 import { Reader } from "./Reader";
-
-function generateId(): string {
-  return crypto.randomUUID();
-}
 
 export function EbookApp() {
   const [books, setBooks] = useState<Book[]>([]);
