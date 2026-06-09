@@ -8,7 +8,13 @@ import {
   hasSavedSpeechChunk,
   normalizeProgressForChapter,
 } from "@/lib/reading-progress";
-import { groupSentencesIntoChunks, splitIntoSentences } from "@/lib/tts";
+import { formatChapterLabel } from "@/lib/epub";
+import {
+  buildChapterChunks,
+  findChunkForSentence,
+  structureChapterParagraphs,
+} from "@/lib/tts";
+import { ChapterToc } from "./ChapterToc";
 import {
   getSavedTTSMode,
   saveTTSMode,
@@ -41,6 +47,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const restoreProgressRef = useRef(book.progress);
 
   const [ttsMode, setTTSMode] = useState<TTSMode>(() => getSavedTTSMode());
+  const [tocOpen, setTocOpen] = useState(false);
   const [showResumePrompt, setShowResumePrompt] = useState(
     () => book.progress.wasListening === true,
   );
@@ -53,22 +60,43 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const chapterIndex = book.progress.chapterIndex;
   const chapter = book.chapters[chapterIndex];
 
-  const sentences = useMemo(
-    () => (chapter ? splitIntoSentences(chapter.content) : []),
+  const paragraphSentences = useMemo(
+    () => (chapter ? structureChapterParagraphs(chapter.content) : []),
     [chapter],
   );
 
+  const sentences = useMemo(
+    () => paragraphSentences.flat(),
+    [paragraphSentences],
+  );
+
+  const sentenceOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let acc = 0;
+    for (const para of paragraphSentences) {
+      offsets.push(acc);
+      acc += para.length;
+    }
+    return offsets;
+  }, [paragraphSentences]);
+
+  const chapterLabel = chapter
+    ? formatChapterLabel(chapter, chapterIndex, book.title)
+    : "";
+
   const resumeSentenceIndex = useMemo(
     () =>
-      getChunkSentenceIndex(
-        sentences,
-        book.progress.speechChunkIndex,
-        book.progress.sentenceIndex,
-      ),
+      chapter
+        ? getChunkSentenceIndex(
+            chapter.content,
+            book.progress.speechChunkIndex,
+            book.progress.sentenceIndex,
+          )
+        : book.progress.sentenceIndex,
     [
       book.progress.sentenceIndex,
       book.progress.speechChunkIndex,
-      sentences,
+      chapter,
     ],
   );
 
@@ -150,12 +178,12 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   }, []);
 
   useEffect(() => {
-    if (sentences.length === 0) return;
+    if (sentences.length === 0 || !chapter) return;
 
     const saved = restoreProgressRef.current;
     const targetIndex = Math.min(
       getChunkSentenceIndex(
-        sentences,
+        chapter.content,
         saved.speechChunkIndex,
         saved.sentenceIndex,
       ),
@@ -335,22 +363,28 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       if (!chapter) return;
 
       const startAt = sentenceIndex ?? progressRef.current.sentenceIndex;
-      const savedChunkIndex = resume
-        ? progressRef.current.speechChunkIndex
-        : undefined;
+      const chunks = buildChapterChunks(chapter.content);
+      let chunkIdx = findChunkForSentence(chunks, startAt);
+      if (chunkIdx < 0) chunkIdx = 0;
+
+      if (resume && progressRef.current.speechChunkIndex != null) {
+        const saved = chunks[progressRef.current.speechChunkIndex];
+        if (saved) chunkIdx = progressRef.current.speechChunkIndex;
+      }
+
       autoContinueRef.current = true;
       setShowResumePrompt(false);
 
       saveProgress(chapterIndex, startAt, {
         wasListening: true,
-        speechChunkIndex: savedChunkIndex ?? null,
+        speechChunkIndex: chunkIdx,
         immediate: true,
       });
 
       if (ttsMode === "online") {
         unlockAudioPlayback();
         onlineSpeech.speak(chapter.content, startAt, {
-          chunkIndex: savedChunkIndex,
+          chunkIndex: chunkIdx,
         });
       } else {
         systemSpeech.speak(chapter.content, startAt);
@@ -478,26 +512,25 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
             <p className="reader__author">{book.author}</p>
           )}
         </div>
+        {book.chapters.length > 1 && (
+          <button
+            type="button"
+            className="btn btn--ghost reader__toc-btn"
+            onClick={() => setTocOpen(true)}
+          >
+            ☰ Mục lục
+          </button>
+        )}
       </header>
 
-      {book.chapters.length > 1 && (
-        <nav className="reader__chapters">
-          <label className="reader__chapters-label">
-            Chương
-            <select
-              className="reader__chapters-select"
-              value={chapterIndex}
-              onChange={(e) => goToChapter(parseInt(e.target.value, 10))}
-            >
-              {book.chapters.map((ch, i) => (
-                <option key={ch.id} value={i}>
-                  {ch.title}
-                </option>
-              ))}
-            </select>
-          </label>
-        </nav>
-      )}
+      <ChapterToc
+        chapters={book.chapters}
+        bookTitle={book.title}
+        currentIndex={chapterIndex}
+        open={tocOpen}
+        onSelect={goToChapter}
+        onClose={() => setTocOpen(false)}
+      />
 
       {showResumePrompt && (
         <button
@@ -516,36 +549,42 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       )}
 
       <article className="reader__content" ref={contentRef}>
-        <h2 className="reader__chapter-title">{chapter.title}</h2>
+        <h2 className="reader__chapter-title">{chapterLabel}</h2>
         <div className="reader__text">
-          {sentences.map((sentence, i) => (
-            <span
-              key={i}
-              data-sentence={i}
-              className={
-                i === resumeSentenceIndex &&
-                !activeSpeech.isPlaying
-                  ? "reader__sentence reader__sentence--resume"
-                  : activeSpeech.isPlaying &&
-                      i >= activeSpeech.currentSentenceIndex &&
-                      i <= activeSpeech.highlightEndIndex
-                    ? "reader__sentence reader__sentence--active"
-                    : "reader__sentence"
-              }
-              onClick={() => {
-                autoContinueRef.current = false;
-                speakNextChapterRef.current = false;
-                setShowResumePrompt(false);
-                activeSpeech.stop();
-                saveProgress(chapterIndex, i, {
-                  wasListening: false,
-                  speechChunkIndex: null,
-                  immediate: true,
-                });
-              }}
-            >
-              {sentence}{" "}
-            </span>
+          {paragraphSentences.map((paraSentences, pIdx) => (
+            <p key={pIdx} className="reader__paragraph">
+              {paraSentences.map((sentence, sIdx) => {
+                const i = sentenceOffsets[pIdx] + sIdx;
+                return (
+                  <span
+                    key={i}
+                    data-sentence={i}
+                    className={
+                      i === resumeSentenceIndex && !activeSpeech.isPlaying
+                        ? "reader__sentence reader__sentence--resume"
+                        : activeSpeech.isPlaying &&
+                            i >= activeSpeech.currentSentenceIndex &&
+                            i <= activeSpeech.highlightEndIndex
+                          ? "reader__sentence reader__sentence--active"
+                          : "reader__sentence"
+                    }
+                    onClick={() => {
+                      autoContinueRef.current = false;
+                      speakNextChapterRef.current = false;
+                      setShowResumePrompt(false);
+                      activeSpeech.stop();
+                      saveProgress(chapterIndex, i, {
+                        wasListening: false,
+                        speechChunkIndex: null,
+                        immediate: true,
+                      });
+                    }}
+                  >
+                    {sentence}{" "}
+                  </span>
+                );
+              })}
+            </p>
           ))}
         </div>
       </article>

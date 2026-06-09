@@ -33,23 +33,13 @@ export const ONLINE_VOICES: OnlineVoiceOption[] = [
   },
 ];
 
-export function splitIntoSentences(text: string): string[] {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return [];
-
-  const parts = normalized.split(
-    /(?<=[.!?…])\s+(?=[A-ZÀÁẢÃẠĂẮẰẲẴẶÂẤẦẨẪẬÈÉẺẼẸÊẾỀỂỄỆÌÍỈĨỊÒÓỎÕỌÔỐỒỔỖỘƠỚỜỞỠỢÙÚỦŨỤƯỨỪỬỮỰỲÝỶỸỴĐ"'])/u,
-  );
-
-  if (parts.length <= 1) {
-    return normalized
-      .split(/[,;]\s+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-  }
-
-  return parts.map((s) => s.trim()).filter(Boolean);
-}
+export {
+  buildChapterChunks,
+  groupParagraphsIntoChunks,
+  splitIntoParagraphs,
+  splitIntoSentences,
+  structureChapterParagraphs,
+} from "./text-structure";
 
 export function groupSentencesIntoChunks(
   sentences: string[],

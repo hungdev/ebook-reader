@@ -7,10 +7,9 @@ import {
   fetchWithRetry,
 } from "@/lib/tts-request-queue";
 import {
+  buildChapterChunks,
   findChunkForSentence,
-  groupSentencesIntoChunks,
   ONLINE_VOICES,
-  splitIntoSentences,
 } from "@/lib/tts";
 import {
   getSavedOnlineVoice,
@@ -53,6 +52,7 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
   const prefetchingRef = useRef<Set<number>>(new Set());
   const inflightRef = useRef<Map<number, Promise<string>>>(new Map());
   const playingChunkIndexRef = useRef<number | null>(null);
+  const playSessionRef = useRef(0);
   const optionsRef = useRef(options);
 
   useEffect(() => {
@@ -232,14 +232,20 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
           );
         };
 
+        const applyRate = () => {
+          audio.playbackRate = rateRef.current;
+        };
+
         audio.addEventListener("ended", onEnded);
         audio.addEventListener("error", onError);
+        audio.addEventListener("loadedmetadata", applyRate, { once: true });
         audio.volume = 1;
-        audio.playbackRate = rateRef.current;
         audio.src = url;
+        applyRate();
         void audio
           .play()
           .then(() => {
+            applyRate();
             playingChunkIndexRef.current = chunkIndex;
             setCurrentSentenceIndex(chunk.startIndex);
             setHighlightEndIndex(chunk.endIndex);
@@ -254,17 +260,17 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
     [revokeBlob],
   );
 
-  const playNextRef = useRef<(chunkIndex: number) => void>(() => {});
-
   const playChunk = useCallback(
-    async (chunkIndex: number) => {
-      if (stoppedRef.current) return;
+    async (chunkIndex: number, session: number) => {
+      if (stoppedRef.current || session !== playSessionRef.current) return;
 
       const chunks = chunksRef.current;
       if (chunkIndex >= chunks.length) {
+        if (session !== playSessionRef.current) return;
         setIsPlaying(false);
         setIsPaused(false);
         setIsLoading(false);
+        playingChunkIndexRef.current = null;
         optionsRef.current.onComplete?.();
         return;
       }
@@ -277,7 +283,7 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
 
       try {
         const url = await takeChunkUrl(chunkIndex);
-        if (stoppedRef.current) {
+        if (stoppedRef.current || session !== playSessionRef.current) {
           revokeBlob(url);
           return;
         }
@@ -292,63 +298,55 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
           optionsRef.current.onSentenceChange?.(chunk.startIndex);
         });
 
-        if (!stoppedRef.current) {
-          playNextRef.current(chunkIndex + 1);
+        if (!stoppedRef.current && session === playSessionRef.current) {
+          void playChunk(chunkIndex + 1, session);
         }
       } catch (err) {
-        if (!stoppedRef.current) {
+        if (!stoppedRef.current && session === playSessionRef.current) {
           const message =
             err instanceof Error ? err.message : "Lỗi đọc thành tiếng";
           setError(message);
           setIsPlaying(false);
           setIsPaused(false);
+          playingChunkIndexRef.current = null;
         }
       } finally {
-        setIsLoading(false);
+        if (session === playSessionRef.current) {
+          setIsLoading(false);
+        }
       }
     },
     [playUrl, prefetchChunks, revokeBlob, takeChunkUrl],
   );
 
-  useEffect(() => {
-    playNextRef.current = (chunkIndex: number) => {
-      void playChunk(chunkIndex);
-    };
-  }, [playChunk]);
-
   const speak = useCallback(
     (text: string, startIndex = 0, speakOptions?: SpeakOptions) => {
-      const sentences = splitIntoSentences(text);
-      if (sentences.length === 0) return;
+      const chunks = buildChapterChunks(text);
+      if (chunks.length === 0) return;
 
       unlockAudioPlayback();
 
       stoppedRef.current = true;
+      playSessionRef.current += 1;
       const audio = getSharedAudio();
       audio.pause();
       revokeAllBlobs();
 
-      const chunks = groupSentencesIntoChunks(sentences);
-      let chunkIndex = Math.max(0, findChunkForSentence(chunks, startIndex));
+      let chunkIndex = findChunkForSentence(chunks, startIndex);
+      if (chunkIndex < 0) chunkIndex = 0;
 
-      if (speakOptions?.chunkIndex != null) {
-        const saved = chunks[speakOptions.chunkIndex];
-        if (
-          saved &&
-          startIndex >= saved.startIndex &&
-          startIndex <= saved.endIndex
-        ) {
-          chunkIndex = speakOptions.chunkIndex;
-        }
+      if (speakOptions?.chunkIndex != null && chunks[speakOptions.chunkIndex]) {
+        chunkIndex = speakOptions.chunkIndex;
       }
 
+      const session = playSessionRef.current;
       stoppedRef.current = false;
       setError(null);
       chunksRef.current = chunks;
       setIsPlaying(true);
       setIsPaused(false);
 
-      void playChunk(chunkIndex);
+      void playChunk(chunkIndex, session);
     },
     [playChunk, revokeAllBlobs],
   );
@@ -367,12 +365,16 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
       unlockAudioPlayback();
       audio.volume = 1;
       audio.playbackRate = rateRef.current;
-      void audio.play().then(() => setIsPaused(false));
+      void audio.play().then(() => {
+        audio.playbackRate = rateRef.current;
+        setIsPaused(false);
+      });
     }
   }, []);
 
   const stop = useCallback(() => {
     stoppedRef.current = true;
+    playSessionRef.current += 1;
     const audio = getSharedAudio();
     audio.pause();
     audio.removeAttribute("src");

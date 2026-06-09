@@ -326,7 +326,20 @@ body {
 }
 
 .reader__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0.5rem 1rem;
   margin-bottom: 1.25rem;
+}
+
+.reader__header .btn--ghost:first-child {
+  flex-shrink: 0;
+}
+
+.reader__toc-btn {
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .reader__meta {
@@ -669,6 +682,104 @@ body {
   letter-spacing: 0.01em;
   text-align: justify;
   hyphens: auto;
+}
+
+.reader__paragraph {
+  margin: 0 0 1.25em;
+  text-indent: 1.5em;
+}
+
+.reader__paragraph:first-of-type {
+  text-indent: 0;
+}
+
+.chapter-toc {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+}
+
+.chapter-toc__backdrop {
+  flex: 1;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  cursor: pointer;
+}
+
+.chapter-toc__panel {
+  width: min(320px, 85vw);
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  order: -1;
+}
+
+.chapter-toc__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.chapter-toc__title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+.chapter-toc__close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  line-height: 1;
+}
+
+.chapter-toc__list {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.chapter-toc__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.95rem;
+  color: var(--foreground);
+  cursor: pointer;
+  line-height: 1.4;
+  transition: background 0.15s;
+}
+
+.chapter-toc__item:hover {
+  background: var(--surface-2);
+}
+
+.chapter-toc__item--active {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.chapter-toc__item--part {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--muted);
+  text-transform: none;
 }
 
 .reader__sentence {

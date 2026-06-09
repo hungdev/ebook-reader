@@ -1,13 +1,13 @@
-import { groupSentencesIntoChunks, splitIntoSentences } from "./tts";
+import { buildChapterChunks } from "./tts";
 import type { ReadingProgress } from "./types";
 
 export function getChunkSentenceIndex(
-  sentences: string[],
+  chapterContent: string,
   speechChunkIndex: number | undefined | null,
   fallback: number,
 ): number {
   if (speechChunkIndex == null) return fallback;
-  const chunks = groupSentencesIntoChunks(sentences);
+  const chunks = buildChapterChunks(chapterContent);
   const chunk = chunks[speechChunkIndex];
   return chunk ? chunk.startIndex : fallback;
 }
@@ -16,9 +16,8 @@ export function normalizeProgressForChapter(
   chapterContent: string,
   progress: ReadingProgress,
 ): ReadingProgress {
-  const sentences = splitIntoSentences(chapterContent);
   const sentenceIndex = getChunkSentenceIndex(
-    sentences,
+    chapterContent,
     progress.speechChunkIndex,
     progress.sentenceIndex,
   );

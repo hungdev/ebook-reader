@@ -1,20 +1,23 @@
 import JSZip from "jszip";
 import type { Chapter } from "./types";
 
+interface TocEntry {
+  label: string;
+  href: string;
+  level: number;
+}
+
 function parseXML(text: string): Document {
   return new DOMParser().parseFromString(text, "application/xml");
 }
 
-function getTextContent(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const body = doc.body;
-  if (!body) return "";
+function basename(path: string): string {
+  const clean = path.split("#")[0].split("?")[0];
+  return clean.split("/").pop() ?? clean;
+}
 
-  body
-    .querySelectorAll("script, style, nav, aside")
-    .forEach((el) => el.remove());
-
-  return body.innerText.replace(/\n{3,}/g, "\n\n").trim();
+function normalizeHref(href: string): string {
+  return href.split("#")[0].split("?")[0].toLowerCase();
 }
 
 function resolvePath(opfPath: string, relative: string): string {
@@ -49,6 +52,261 @@ function findZipFile(zip: JSZip, path: string): JSZip.JSZipObject | null {
     (name) => name.toLowerCase() === lower,
   );
   return match ? zip.file(match) : null;
+}
+
+function cleanText(text: string): string {
+  return text.replace(/[ \t\r\n]+/g, " ").trim();
+}
+
+function htmlToParagraphs(html: string): string[] {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const body = doc.body;
+  if (!body) return [];
+
+  body
+    .querySelectorAll("script, style, nav, aside, svg, img")
+    .forEach((el) => el.remove());
+
+  let paragraphs: string[] = [];
+
+  const pTags = [...body.querySelectorAll("p")];
+  if (pTags.length > 0) {
+    for (const p of pTags) {
+      const text = cleanText(p.textContent ?? "");
+      if (text) paragraphs.push(text);
+    }
+    return paragraphs;
+  }
+
+  const fromTags = (selector: string) =>
+    [...body.querySelectorAll(selector)]
+      .map((el) => cleanText(el.textContent ?? ""))
+      .filter(Boolean);
+
+  paragraphs = fromTags("div, section, article, blockquote, li");
+  if (paragraphs.length > 0) return paragraphs;
+
+  paragraphs = fromTags("h1, h2, h3, h4, h5, h6");
+  if (paragraphs.length > 0) return paragraphs;
+
+  const fallback = cleanText(body.textContent ?? "");
+  return fallback ? [fallback] : [];
+}
+
+function extractHeading(html: string): string | undefined {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const heading = doc.querySelector("h1, h2, h3, h4");
+  const text = cleanText(heading?.textContent ?? "");
+  return text || undefined;
+}
+
+function parseNavList(ol: Element, basePath: string, level: number, out: TocEntry[]): void {
+  for (const li of ol.querySelectorAll(":scope > li")) {
+    const link = li.querySelector(":scope > a, :scope > span > a");
+    const label = cleanText(link?.textContent ?? "");
+    const rawHref = link?.getAttribute("href");
+    if (label && rawHref) {
+      out.push({
+        label,
+        href: resolvePath(basePath, rawHref.split("#")[0]),
+        level,
+      });
+    }
+    const nested = li.querySelector(":scope > ol");
+    if (nested) {
+      parseNavList(nested, basePath, level + 1, out);
+    }
+  }
+}
+
+async function loadEpub3Nav(
+  zip: JSZip,
+  opfDoc: Document,
+  opfPath: string,
+): Promise<TocEntry[]> {
+  let navPath: string | null = null;
+
+  for (const item of opfDoc.querySelectorAll("manifest item, manifest > item")) {
+    const properties = item.getAttribute("properties") ?? "";
+    if (properties.split(/\s+/).includes("nav")) {
+      const href = item.getAttribute("href");
+      if (href) navPath = resolvePath(opfPath, href);
+    }
+  }
+
+  if (!navPath) return [];
+
+  const zipEntry = findZipFile(zip, navPath);
+  const html = await zipEntry?.async("text");
+  if (!html) return [];
+
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const entries: TocEntry[] = [];
+  const navBase = navPath.includes("/")
+    ? navPath.split("/").slice(0, -1).join("/")
+    : "";
+
+  for (const nav of doc.querySelectorAll("nav")) {
+    const type =
+      nav.getAttribute("epub:type") ??
+      nav.getAttributeNS("http://www.idpf.org/2007/ops", "type");
+    if (type !== "toc") continue;
+    const ol = nav.querySelector("ol");
+    if (ol) parseNavList(ol, navBase, 0, entries);
+  }
+
+  return entries;
+}
+
+function isTag(el: Element, name: string): boolean {
+  return el.localName === name || el.tagName === name;
+}
+
+function walkNcxPoints(navPoint: Element, out: TocEntry[], level: number): void {
+  let label = "";
+  let src: string | null = null;
+
+  for (const child of Array.from(navPoint.children)) {
+    if (isTag(child, "navLabel")) {
+      label = cleanText(child.textContent ?? "");
+    } else if (isTag(child, "content")) {
+      src = child.getAttribute("src");
+    }
+  }
+
+  if (label && src) {
+    out.push({
+      label,
+      href: src.split("#")[0],
+      level,
+    });
+  }
+
+  for (const child of Array.from(navPoint.children)) {
+    if (isTag(child, "navPoint")) {
+      walkNcxPoints(child, out, level + 1);
+    }
+  }
+}
+
+async function loadNcxToc(
+  zip: JSZip,
+  opfDoc: Document,
+  opfPath: string,
+): Promise<TocEntry[]> {
+  let ncxPath: string | null = null;
+
+  for (const item of opfDoc.querySelectorAll("manifest item, manifest > item")) {
+    if (item.getAttribute("media-type") === "application/x-dtbncx+xml") {
+      const href = item.getAttribute("href");
+      if (href) ncxPath = resolvePath(opfPath, href);
+    }
+  }
+
+  if (!ncxPath) {
+    const spineToc = opfDoc.querySelector("spine")?.getAttribute("toc");
+    if (spineToc) {
+      const item = opfDoc.querySelector(`manifest item[id="${spineToc}"]`);
+      const href = item?.getAttribute("href");
+      if (href) ncxPath = resolvePath(opfPath, href);
+    }
+  }
+
+  if (!ncxPath) return [];
+
+  const zipEntry = findZipFile(zip, ncxPath);
+  const xml = await zipEntry?.async("text");
+  if (!xml) return [];
+
+  const doc = parseXML(xml);
+  const entries: TocEntry[] = [];
+  const ncxBase = ncxPath.includes("/")
+    ? ncxPath.split("/").slice(0, -1).join("/")
+    : "";
+
+  for (const navPoint of doc.querySelectorAll("navMap > navPoint")) {
+    walkNcxPoints(navPoint, entries, 0);
+  }
+
+  return entries.map((entry) => ({
+    ...entry,
+    href: resolvePath(ncxBase, entry.href),
+  }));
+}
+
+function matchTocEntry(
+  spineHref: string,
+  toc: TocEntry[],
+  usedIndices: Set<number>,
+): TocEntry | undefined {
+  const spineNorm = normalizeHref(spineHref);
+  const spineBase = basename(spineHref);
+
+  for (let i = 0; i < toc.length; i++) {
+    if (usedIndices.has(i)) continue;
+    const entry = toc[i];
+    const entryNorm = normalizeHref(entry.href);
+    const entryBase = basename(entry.href);
+    if (
+      spineNorm === entryNorm ||
+      spineBase === entryBase ||
+      spineNorm.endsWith(entryNorm) ||
+      entryNorm.endsWith(spineNorm)
+    ) {
+      usedIndices.add(i);
+      return entry;
+    }
+  }
+
+  return undefined;
+}
+
+function resolveChapterTitle(
+  html: string,
+  spineHref: string,
+  index: number,
+  bookTitle: string,
+  toc: TocEntry[],
+  usedTocIndices: Set<number>,
+): { title: string; tocLevel: number } {
+  const tocEntry = matchTocEntry(spineHref, toc, usedTocIndices);
+  if (tocEntry) {
+    return { title: tocEntry.label, tocLevel: tocEntry.level };
+  }
+
+  const heading = extractHeading(html);
+  if (heading && heading !== bookTitle) {
+    return { title: heading, tocLevel: 0 };
+  }
+
+  const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  const htmlTitle = titleMatch?.[1] ? cleanText(titleMatch[1]) : undefined;
+  if (htmlTitle && htmlTitle !== bookTitle) {
+    return { title: htmlTitle, tocLevel: 0 };
+  }
+
+  return { title: `Chương ${index + 1}`, tocLevel: 0 };
+}
+
+export function formatChapterLabel(
+  chapter: Chapter,
+  index: number,
+  bookTitle: string,
+): string {
+  if (chapter.tocLevel === 0 && chapter.title && chapter.title !== bookTitle) {
+    const isPart = /^(phần|part|book)\s/i.test(chapter.title);
+    if (isPart) return chapter.title;
+  }
+
+  if (!chapter.title || chapter.title === bookTitle) {
+    return `${index + 1}`;
+  }
+
+  if (/^\d+$/.test(chapter.title)) {
+    return chapter.title;
+  }
+
+  return chapter.title;
 }
 
 export async function parseEpub(
@@ -94,6 +352,11 @@ export async function parseEpub(
     if (idref) spineIds.push(idref);
   });
 
+  const navToc = await loadEpub3Nav(zip, opfDoc, opfPath);
+  const ncxToc = navToc.length === 0 ? await loadNcxToc(zip, opfDoc, opfPath) : [];
+  const toc = navToc.length > 0 ? navToc : ncxToc;
+  const usedTocIndices = new Set<number>();
+
   const chapters: Chapter[] = [];
 
   for (const id of spineIds) {
@@ -104,16 +367,23 @@ export async function parseEpub(
     const html = await zipEntry?.async("text");
     if (!html) continue;
 
-    const text = getTextContent(html);
-    if (!text) continue;
+    const paragraphs = htmlToParagraphs(html);
+    if (paragraphs.length === 0) continue;
 
-    const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    const chapterTitle = titleMatch?.[1]?.trim() || `Chương ${chapters.length + 1}`;
+    const { title: chapterTitle, tocLevel } = resolveChapterTitle(
+      html,
+      href,
+      chapters.length,
+      title,
+      toc,
+      usedTocIndices,
+    );
 
     chapters.push({
       id,
       title: chapterTitle,
-      content: text,
+      content: paragraphs.join("\n\n"),
+      tocLevel,
     });
   }
 
@@ -133,13 +403,18 @@ export async function parseTxt(
 
   const title = fileName.replace(/\.(txt|text)$/i, "") || "Văn bản";
 
+  const paragraphs = text
+    .split(/\n\s*\n+/)
+    .map((p) => p.replace(/[ \t]+/g, " ").trim())
+    .filter(Boolean);
+
   return {
     title,
     chapters: [
       {
         id: "main",
         title: "Nội dung",
-        content: text,
+        content: paragraphs.length > 0 ? paragraphs.join("\n\n") : text.trim(),
       },
     ],
   };

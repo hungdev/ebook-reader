@@ -4,6 +4,7 @@ export interface Chapter {
   id: string;
   title: string;
   content: string;
+  tocLevel?: number;
 }
 
 export interface ReadingProgress {
