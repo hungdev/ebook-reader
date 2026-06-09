@@ -33,6 +33,13 @@ export async function convertFileToEpub(
     );
   }
 
-  await execFileAsync(binary, [inputPath, outputPath]);
+  await execFileAsync(binary, [inputPath, outputPath], {
+    env: {
+      ...process.env,
+      LANG: "C.UTF-8",
+      LC_ALL: "C.UTF-8",
+      LC_CTYPE: "C.UTF-8",
+    },
+  });
   return outputPath;
 }

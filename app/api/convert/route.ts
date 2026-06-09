@@ -9,6 +9,7 @@ import {
 } from "@/lib/book-formats";
 
 export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
 
