@@ -152,16 +152,7 @@ export function EbookApp() {
 
   const handleOpen = useCallback(async (book: Book) => {
     const fresh = await getBook(book.id);
-    const base = fresh ?? book;
-    const memUpdated = book.progress.updatedAt ?? 0;
-    const dbUpdated = fresh?.progress.updatedAt ?? 0;
-    const opened: Book = {
-      ...base,
-      progress:
-        memUpdated >= dbUpdated
-          ? book.progress
-          : (fresh?.progress ?? book.progress),
-    };
+    const opened: Book = fresh ?? book;
     saveLastBookId(opened.id);
     setActiveBook(opened);
   }, []);

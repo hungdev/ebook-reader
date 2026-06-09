@@ -329,9 +329,18 @@ export function useOnlineSpeech(options: UseOnlineSpeechOptions = {}) {
       revokeAllBlobs();
 
       const chunks = groupSentencesIntoChunks(sentences);
-      const chunkIndex =
-        speakOptions?.chunkIndex ??
-        Math.max(0, findChunkForSentence(chunks, startIndex));
+      let chunkIndex = Math.max(0, findChunkForSentence(chunks, startIndex));
+
+      if (speakOptions?.chunkIndex != null) {
+        const saved = chunks[speakOptions.chunkIndex];
+        if (
+          saved &&
+          startIndex >= saved.startIndex &&
+          startIndex <= saved.endIndex
+        ) {
+          chunkIndex = speakOptions.chunkIndex;
+        }
+      }
 
       stoppedRef.current = false;
       setError(null);
