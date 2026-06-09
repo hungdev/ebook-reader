@@ -1,0 +1,5 @@
+node_modules
+.next
+.git
+lib/calibre/bin
+.env*

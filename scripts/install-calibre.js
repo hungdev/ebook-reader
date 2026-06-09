@@ -40,6 +40,11 @@ function binaryUrl() {
 }
 
 async function main() {
+  if (process.env.SKIP_CALIBRE_DOWNLOAD === "1") {
+    console.log("[calibre] Bỏ qua tải binary — dùng calibre hệ thống");
+    return;
+  }
+
   const target = ebookConvertPath();
   if (!target) {
     console.log(`[calibre] Bỏ qua — platform ${process.platform} chưa hỗ trợ`);

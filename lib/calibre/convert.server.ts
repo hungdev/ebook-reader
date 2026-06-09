@@ -8,7 +8,9 @@ const execFileAsync = promisify(execFile);
 
 const CALIBRE_ROOT = join(process.cwd(), "lib/calibre");
 
-function getEbookConvertPath(): string {
+const SYSTEM_PATHS = ["/usr/bin/ebook-convert", "/usr/local/bin/ebook-convert"];
+
+function getBundledEbookConvertPath(): string {
   const plat = platform();
 
   if (plat === "darwin") {
@@ -21,17 +23,28 @@ function getEbookConvertPath(): string {
   throw new Error(`Hệ điều hành ${plat} chưa được hỗ trợ`);
 }
 
+function getEbookConvertPath(): string {
+  for (const path of SYSTEM_PATHS) {
+    if (existsSync(path)) {
+      return path;
+    }
+  }
+
+  const bundled = getBundledEbookConvertPath();
+  if (existsSync(bundled)) {
+    return bundled;
+  }
+
+  throw new Error(
+    "Calibre chưa được cài. Chạy: pnpm install (hoặc node scripts/install-calibre.js)",
+  );
+}
+
 export async function convertFileToEpub(
   inputPath: string,
   outputPath: string,
 ): Promise<string> {
   const binary = getEbookConvertPath();
-
-  if (!existsSync(binary)) {
-    throw new Error(
-      "Calibre chưa được cài. Chạy: pnpm install (hoặc node scripts/install-calibre.js)",
-    );
-  }
 
   await execFileAsync(binary, [inputPath, outputPath], {
     env: {
