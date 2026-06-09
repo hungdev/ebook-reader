@@ -1,5 +1,6 @@
 "use client";
 
+import { getUploadAccept } from "@/lib/book-formats";
 import { formatReadingProgress, getReadingPercent } from "@/lib/progress";
 import type { Book } from "@/lib/types";
 
@@ -36,14 +37,14 @@ export function Library({
         <div>
           <h1 className="library__title">Thư viện sách</h1>
           <p className="library__subtitle">
-            Tải ebook từ máy cá nhân — hỗ trợ EPUB và TXT
+            Tải ebook từ máy cá nhân — EPUB, TXT, MOBI, AZW, PDF…
           </p>
         </div>
         <label className="btn btn--primary library__upload">
           {isUploading ? "Đang xử lý..." : "+ Thêm sách"}
           <input
             type="file"
-            accept=".epub,.txt,.text"
+            accept={getUploadAccept()}
             multiple
             className="sr-only"
             disabled={isUploading}
@@ -73,7 +74,10 @@ export function Library({
         <div className="library__empty">
           <div className="library__empty-icon">📚</div>
           <h2>Chưa có sách nào</h2>
-          <p>Nhấn &quot;Thêm sách&quot; để tải file EPUB hoặc TXT từ máy bạn.</p>
+          <p>
+            Nhấn &quot;Thêm sách&quot; để tải EPUB, TXT, MOBI, AZW, PDF từ máy
+            bạn. Các định dạng khác EPUB sẽ được chuyển đổi tự động.
+          </p>
         </div>
       ) : (
         <ul className="library__list">

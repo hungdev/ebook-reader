@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { unlockAudioPlayback } from "@/lib/audio-unlock";
+import { flushProgressSave } from "@/lib/progress-save";
 import { splitIntoSentences } from "@/lib/tts";
 import {
   getSavedTTSMode,
@@ -33,6 +34,11 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const [showResumePrompt, setShowResumePrompt] = useState(
     () => book.progress.wasListening === true,
   );
+  const showResumePromptRef = useRef(showResumePrompt);
+
+  useEffect(() => {
+    showResumePromptRef.current = showResumePrompt;
+  }, [showResumePrompt]);
 
   const chapterIndex = book.progress.chapterIndex;
   const chapter = book.chapters[chapterIndex];
@@ -50,7 +56,11 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     (
       nextChapterIndex: number,
       sentenceIndex: number,
-      options?: { wasListening?: boolean; immediate?: boolean },
+      options?: {
+        wasListening?: boolean;
+        speechChunkIndex?: number | null;
+        immediate?: boolean;
+      },
     ) => {
       const progress: ReadingProgress = {
         chapterIndex: nextChapterIndex,
@@ -58,6 +68,17 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
         wasListening:
           options?.wasListening ?? progressRef.current.wasListening,
       };
+
+      if (options && "speechChunkIndex" in options) {
+        if (options.speechChunkIndex == null) {
+          delete progress.speechChunkIndex;
+        } else {
+          progress.speechChunkIndex = options.speechChunkIndex;
+        }
+      } else if (progressRef.current.speechChunkIndex != null) {
+        progress.speechChunkIndex = progressRef.current.speechChunkIndex;
+      }
+
       progressRef.current = progress;
       onProgressChange(progress, options?.immediate);
     },
@@ -99,7 +120,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     const timer = window.setTimeout(() => {
       const observer = new IntersectionObserver(
         (entries) => {
-          if (autoContinueRef.current) return;
+          if (autoContinueRef.current || showResumePromptRef.current) return;
 
           let bestIndex = -1;
           let bestRatio = 0;
@@ -156,15 +177,22 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     };
   }, [book.id, chapterIndex, onProgressChange, sentences.length]);
 
-  const handleSentenceChange = useCallback(
-    (index: number) => {
-      saveProgress(chapterIndex, index, {
+  const handleChunkStart = useCallback(
+    (chunkIndex: number, sentenceIndex: number) => {
+      saveProgress(chapterIndex, sentenceIndex, {
         wasListening: true,
+        speechChunkIndex: chunkIndex,
         immediate: true,
       });
+    },
+    [chapterIndex, saveProgress],
+  );
+
+  const handleSentenceChange = useCallback(
+    (index: number) => {
       scrollToSentence(index);
     },
-    [chapterIndex, saveProgress, scrollToSentence],
+    [scrollToSentence],
   );
 
   const handleComplete = useCallback(() => {
@@ -172,12 +200,14 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       speakNextChapterRef.current = true;
       saveProgress(chapterIndex + 1, 0, {
         wasListening: true,
+        speechChunkIndex: null,
         immediate: true,
       });
     } else {
       autoContinueRef.current = false;
       saveProgress(chapterIndex, progressRef.current.sentenceIndex, {
         wasListening: false,
+        speechChunkIndex: null,
         immediate: true,
       });
     }
@@ -190,6 +220,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
 
   const onlineSpeech = useOnlineSpeech({
     onSentenceChange: handleSentenceChange,
+    onChunkStart: handleChunkStart,
     onComplete: handleComplete,
   });
 
@@ -210,10 +241,19 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     if (!activeSpeech.isPlaying) return;
 
     const interval = window.setInterval(() => {
+      const speechChunkIndex =
+        ttsMode === "online"
+          ? onlineSpeech.getPlayingChunkIndex()
+          : progressRef.current.speechChunkIndex;
+
       saveProgress(
         progressRef.current.chapterIndex,
         activeSpeech.currentSentenceIndex,
-        { wasListening: true, immediate: true },
+        {
+          wasListening: true,
+          speechChunkIndex: speechChunkIndex ?? null,
+          immediate: true,
+        },
       );
     }, 3000);
 
@@ -221,7 +261,9 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   }, [
     activeSpeech.isPlaying,
     activeSpeech.currentSentenceIndex,
+    onlineSpeech,
     saveProgress,
+    ttsMode,
   ]);
 
   const startPlayback = useCallback(
@@ -229,21 +271,26 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
       if (!chapter) return;
 
       const startAt = sentenceIndex ?? progressRef.current.sentenceIndex;
+      const savedChunkIndex = progressRef.current.speechChunkIndex;
       autoContinueRef.current = true;
       setShowResumePrompt(false);
 
       saveProgress(chapterIndex, startAt, {
         wasListening: true,
+        speechChunkIndex: savedChunkIndex ?? null,
         immediate: true,
       });
 
       if (ttsMode === "online") {
         unlockAudioPlayback();
+        onlineSpeech.speak(chapter.content, startAt, {
+          chunkIndex: savedChunkIndex,
+        });
+      } else {
+        systemSpeech.speak(chapter.content, startAt);
       }
-
-      activeSpeech.speak(chapter.content, startAt);
     },
-    [activeSpeech, chapter, chapterIndex, saveProgress, ttsMode],
+    [chapter, chapterIndex, onlineSpeech, saveProgress, systemSpeech, ttsMode],
   );
 
   const handleModeChange = (mode: TTSMode) => {
@@ -257,6 +304,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
   const handleStop = useCallback(() => {
     saveProgress(chapterIndex, activeSpeech.currentSentenceIndex, {
       wasListening: false,
+      speechChunkIndex: null,
       immediate: true,
     });
     autoContinueRef.current = false;
@@ -281,15 +329,21 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
     speakNextChapterRef.current = false;
     setShowResumePrompt(false);
     activeSpeech.stop();
-    saveProgress(index, 0, { wasListening: false, immediate: true });
+    saveProgress(index, 0, {
+      wasListening: false,
+      speechChunkIndex: null,
+      immediate: true,
+    });
   };
 
-  const handleBack = () => {
+  const handleBack = async () => {
+    activeSpeech.stop();
     saveProgress(
       progressRef.current.chapterIndex,
       progressRef.current.sentenceIndex,
-      { wasListening: false, immediate: true },
+      { wasListening: false, immediate: false },
     );
+    await flushProgressSave();
     onBack();
   };
 
@@ -397,6 +451,7 @@ export function Reader({ book, onBack, onProgressChange }: ReaderProps) {
                 activeSpeech.stop();
                 saveProgress(chapterIndex, i, {
                   wasListening: false,
+                  speechChunkIndex: null,
                   immediate: true,
                 });
               }}

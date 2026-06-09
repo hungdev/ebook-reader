@@ -20,6 +20,9 @@
 # production
 /build
 
+# calibre binary (tải qua postinstall)
+/lib/calibre/bin
+
 # misc
 .DS_Store
 *.pem

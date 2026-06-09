@@ -10,7 +10,9 @@ import {
   warmUpSpeechSynthesis,
 } from "@/lib/tts";
 import {
+  getSavedRate,
   getSavedSystemVoice,
+  saveRate,
   saveSystemVoice,
 } from "@/lib/tts-prefs";
 import type { SpeechVoiceOption } from "@/lib/types";
@@ -23,7 +25,7 @@ interface UseSpeechOptions {
 export function useSpeech(options: UseSpeechOptions = {}) {
   const [voices, setVoices] = useState<SpeechVoiceOption[]>([]);
   const [selectedVoiceURI, setSelectedVoiceURIState] = useState("");
-  const [rate, setRate] = useState(1);
+  const [rate, setRateState] = useState(() => getSavedRate());
   const [isPlaying, setIsPlaying] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(0);
@@ -34,6 +36,11 @@ export function useSpeech(options: UseSpeechOptions = {}) {
   const rateRef = useRef(rate);
   const voiceURIRef = useRef(selectedVoiceURI);
   const warmedUpRef = useRef(false);
+  const isPlayingRef = useRef(false);
+  const textRef = useRef<string | null>(null);
+  const speakRef = useRef<(text: string, startIndex?: number) => void>(
+    () => {},
+  );
   const onSentenceChangeRef = useRef(options.onSentenceChange);
   const onCompleteRef = useRef(options.onComplete);
 
@@ -47,12 +54,30 @@ export function useSpeech(options: UseSpeechOptions = {}) {
   }, [rate]);
 
   useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
     voiceURIRef.current = selectedVoiceURI;
   }, [selectedVoiceURI]);
 
   const setSelectedVoiceURI = useCallback((uri: string) => {
     setSelectedVoiceURIState(uri);
     saveSystemVoice(uri);
+  }, []);
+
+  const setRate = useCallback((value: number) => {
+    setRateState(value);
+    rateRef.current = value;
+    saveRate(value);
+
+    if (isPlayingRef.current && textRef.current) {
+      const idx = sentenceIndexRef.current;
+      speechSynthesis.cancel();
+      window.setTimeout(() => {
+        speakRef.current(textRef.current!, idx);
+      }, 50);
+    }
   }, []);
 
   const refreshVoices = useCallback(async () => {
@@ -122,6 +147,8 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     const sentences = splitIntoSentences(text);
     if (sentences.length === 0) return;
 
+    textRef.current = text;
+
     if (!warmedUpRef.current) {
       warmUpSpeechSynthesis();
       warmedUpRef.current = true;
@@ -140,6 +167,7 @@ export function useSpeech(options: UseSpeechOptions = {}) {
       applyVoiceToUtterance(utterance, voiceURIRef.current);
       utterance.rate = rateRef.current;
       utterance.pitch = 1;
+      utterance.volume = 1;
 
       const index = i;
       utterance.onstart = () => {
@@ -166,6 +194,10 @@ export function useSpeech(options: UseSpeechOptions = {}) {
     }
   }, []);
 
+  useEffect(() => {
+    speakRef.current = speak;
+  }, [speak]);
+
   const pause = useCallback(() => {
     if (speechSynthesis.speaking && !speechSynthesis.paused) {
       speechSynthesis.pause();
@@ -182,6 +214,7 @@ export function useSpeech(options: UseSpeechOptions = {}) {
 
   const stop = useCallback(() => {
     speechSynthesis.cancel();
+    textRef.current = null;
     setIsPlaying(false);
     setIsPaused(false);
     sentenceIndexRef.current = 0;

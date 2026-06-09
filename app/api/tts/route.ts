@@ -20,7 +20,11 @@ export async function POST(request: Request) {
 
   let lastError = "TTS failed";
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+    }
+
     try {
       const communicate = new Communicate(text, {
         voice,
@@ -50,5 +54,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return Response.json({ error: lastError }, { status: 500 });
+  return Response.json({ error: lastError }, { status: 503 });
 }

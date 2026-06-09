@@ -1,6 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getFileExtension,
+  isUploadExtension,
+  needsConversion,
+} from "@/lib/book-formats";
+import { convertToEpub } from "@/lib/convert-client";
 import { parseEpub, parseTxt } from "@/lib/epub";
 import { flushProgressSave, scheduleProgressSave } from "@/lib/progress-save";
 import {
@@ -81,31 +87,38 @@ export function EbookApp() {
     const errors: string[] = [];
 
     for (const file of Array.from(files)) {
-      const ext = file.name.split(".").pop()?.toLowerCase();
-      if (!ext || !["epub", "txt", "text"].includes(ext)) {
+      const ext = getFileExtension(file.name);
+      if (!ext || !isUploadExtension(ext)) {
         errors.push(`"${file.name}": định dạng không hỗ trợ`);
         continue;
       }
 
       try {
-        const buffer = await file.arrayBuffer();
         let parsed: {
           title: string;
           author?: string;
           chapters: Book["chapters"];
         };
+        let format: Book["format"] = "epub";
 
         if (ext === "epub") {
-          parsed = await parseEpub(buffer);
+          parsed = await parseEpub(await file.arrayBuffer());
+        } else if (ext === "txt" || ext === "text") {
+          parsed = await parseTxt(await file.arrayBuffer(), file.name);
+          format = "txt";
+        } else if (needsConversion(ext)) {
+          const epubBuffer = await convertToEpub(file);
+          parsed = await parseEpub(epubBuffer);
         } else {
-          parsed = await parseTxt(buffer, file.name);
+          errors.push(`"${file.name}": định dạng không hỗ trợ`);
+          continue;
         }
 
         const book: Book = {
           id: generateId(),
           title: parsed.title,
           author: parsed.author,
-          format: ext === "epub" ? "epub" : "txt",
+          format,
           chapters: parsed.chapters,
           addedAt: Date.now(),
           progress: { chapterIndex: 0, sentenceIndex: 0 },
@@ -142,7 +155,16 @@ export function EbookApp() {
 
   const handleOpen = useCallback(async (book: Book) => {
     const fresh = await getBook(book.id);
-    const opened = fresh ?? book;
+    const base = fresh ?? book;
+    const memUpdated = book.progress.updatedAt ?? 0;
+    const dbUpdated = fresh?.progress.updatedAt ?? 0;
+    const opened: Book = {
+      ...base,
+      progress:
+        memUpdated >= dbUpdated
+          ? book.progress
+          : (fresh?.progress ?? book.progress),
+    };
     saveLastBookId(opened.id);
     setActiveBook(opened);
   }, []);
