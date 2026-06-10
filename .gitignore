@@ -23,6 +23,10 @@
 # calibre binary (tải qua postinstall)
 /lib/calibre/bin
 
+# uploaded ebooks (giữ thư mục, bỏ file sách)
+/uploads/books/*
+!/uploads/books/.gitkeep
+
 # misc
 .DS_Store
 *.pem

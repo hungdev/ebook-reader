@@ -17,12 +17,15 @@ export interface ReadingProgress {
 
 export interface Book {
   id: string;
+  syncKey?: string;
   title: string;
   author?: string;
   format: BookFormat;
   chapters: Chapter[];
   addedAt: number;
   progress: ReadingProgress;
+  sourceUpdatedAt?: number;
+  cachedAt?: number;
 }
 
 export type TTSMode = "system" | "online";

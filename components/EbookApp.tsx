@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { computeBookSyncKey, getBookSyncKey } from "@/lib/book-sync-key";
 import {
   getFileExtension,
   isUploadExtension,
@@ -8,20 +9,23 @@ import {
 } from "@/lib/book-formats";
 import { convertToEpub } from "@/lib/convert-client";
 import { parseEpub, parseTxt } from "@/lib/epub";
+import { deleteRemoteBook, uploadBookToServer } from "@/lib/library-client";
+import { cacheUploadedBook, syncLibraryFromServer } from "@/lib/library-sync";
 import { flushProgressSave, scheduleProgressSave } from "@/lib/progress-save";
+import { fetchSyncState } from "@/lib/progress-sync.client";
 import {
-  clearLastBookId,
-  getLastBookId,
-  saveLastBookId,
+  clearLastBookSession,
+  getLastBookSession,
+  getLegacyLastBookId,
+  saveLastBookSession,
 } from "@/lib/reading-session";
+import { mergeRemoteSyncState } from "@/lib/sync-merge";
 import {
   deleteBook,
-  getAllBooks,
   getBook,
   saveBook,
 } from "@/lib/storage";
-import { generateId } from "@/lib/id";
-import type { Book, ReadingProgress } from "@/lib/types";
+import type { Book, BookFormat, ReadingProgress } from "@/lib/types";
 import { Library } from "./Library";
 import { Reader } from "./Reader";
 
@@ -30,25 +34,55 @@ export function EbookApp() {
   const [activeBook, setActiveBook] = useState<Book | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingMessage, setLoadingMessage] = useState("Đang tải thư viện...");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const activeBookIdRef = useRef<string | null>(null);
+  const activeBookKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     activeBookIdRef.current = activeBook?.id ?? null;
   }, [activeBook?.id]);
 
   useEffect(() => {
+    if (!activeBook) {
+      activeBookKeyRef.current = null;
+      return;
+    }
+
+    void getBookSyncKey(activeBook).then((bookKey) => {
+      activeBookKeyRef.current = bookKey;
+    });
+  }, [activeBook]);
+
+  useEffect(() => {
     const init = async () => {
-      const loaded = await getAllBooks();
+      setLoadingMessage("Đang đồng bộ thư viện...");
+      const { books: syncedBooks } = await syncLibraryFromServer();
+      let loaded = syncedBooks;
+
+      setLoadingMessage("Đang đồng bộ vị trí đọc...");
+      const remote = await fetchSyncState();
+      if (remote) {
+        const merged = await mergeRemoteSyncState(loaded, remote);
+        loaded = merged.books;
+      }
+
       setBooks(loaded);
 
-      const lastBookId = getLastBookId();
-      if (lastBookId) {
-        const fresh = await getBook(lastBookId);
+      const legacyBookId = getLegacyLastBookId();
+      const session = getLastBookSession();
+      const resumeBookId = session?.bookId ?? legacyBookId;
+      if (resumeBookId) {
+        const fresh = loaded.find((book) => book.id === resumeBookId)
+          ?? (await getBook(resumeBookId));
         if (fresh) {
+          if (legacyBookId && !session) {
+            const bookKey = await getBookSyncKey(fresh);
+            saveLastBookSession(fresh.id, bookKey);
+          }
           setActiveBook(fresh);
         } else {
-          clearLastBookId();
+          clearLastBookSession();
         }
       }
 
@@ -96,32 +130,51 @@ export function EbookApp() {
           author?: string;
           chapters: Book["chapters"];
         };
-        let format: Book["format"] = "epub";
+        let storedFormat: BookFormat = "epub";
+        let uploadFile: File = file;
 
         if (ext === "epub") {
           parsed = await parseEpub(await file.arrayBuffer());
         } else if (ext === "txt" || ext === "text") {
           parsed = await parseTxt(await file.arrayBuffer(), file.name);
-          format = "txt";
+          storedFormat = "txt";
         } else if (needsConversion(ext)) {
           const epubBuffer = await convertToEpub(file);
           parsed = await parseEpub(epubBuffer);
+          const safeName = file.name.replace(/\.[^.]+$/, "");
+          uploadFile = new File([epubBuffer], `${safeName}.epub`, {
+            type: "application/epub+zip",
+          });
         } else {
           errors.push(`"${file.name}": định dạng không hỗ trợ`);
           continue;
         }
 
-        const book: Book = {
-          id: generateId(),
+        const syncKey = await computeBookSyncKey({
           title: parsed.title,
           author: parsed.author,
-          format,
           chapters: parsed.chapters,
-          addedAt: Date.now(),
-          progress: { chapterIndex: 0, sentenceIndex: 0 },
-        };
+        });
 
-        await saveBook(book);
+        const remoteMeta = await uploadBookToServer(uploadFile, {
+          syncKey,
+          title: parsed.title,
+          author: parsed.author,
+          format: storedFormat,
+        });
+
+        const existing = await getBook(syncKey);
+        const book = await cacheUploadedBook(
+          remoteMeta,
+          parsed.chapters,
+          parsed.author,
+        );
+
+        if (existing?.progress) {
+          book.progress = existing.progress;
+          await saveBook(book);
+        }
+
         newBooks.push(book);
       } catch (err) {
         const message =
@@ -131,7 +184,10 @@ export function EbookApp() {
     }
 
     if (newBooks.length > 0) {
-      setBooks((prev) => [...newBooks, ...prev]);
+      setBooks((prev) => {
+        const incomingIds = new Set(newBooks.map((book) => book.id));
+        return [...newBooks, ...prev.filter((book) => !incomingIds.has(book.id))];
+      });
     }
 
     if (errors.length > 0) {
@@ -142,18 +198,26 @@ export function EbookApp() {
   }, []);
 
   const handleDelete = useCallback(async (id: string) => {
+    try {
+      await deleteRemoteBook(id);
+    } catch {
+      // vẫn xóa cache local nếu server không phản hồi
+    }
+
     await deleteBook(id);
     setBooks((prev) => prev.filter((b) => b.id !== id));
     setActiveBook((prev) => (prev?.id === id ? null : prev));
-    if (getLastBookId() === id) {
-      clearLastBookId();
+    if (getLastBookSession()?.bookId === id) {
+      clearLastBookSession();
     }
   }, []);
 
   const handleOpen = useCallback(async (book: Book) => {
     const fresh = await getBook(book.id);
     const opened: Book = fresh ?? book;
-    saveLastBookId(opened.id);
+    const bookKey = await getBookSyncKey(opened);
+    saveLastBookSession(opened.id, bookKey);
+    activeBookKeyRef.current = bookKey;
     setBooks((prev) =>
       prev.map((b) => (b.id === opened.id ? opened : b)),
     );
@@ -162,14 +226,15 @@ export function EbookApp() {
 
   const handleBack = useCallback(async () => {
     await flushProgressSave();
-    clearLastBookId();
+    clearLastBookSession();
     setActiveBook(null);
   }, []);
 
   const handleProgressChange = useCallback(
     (progress: ReadingProgress, immediate = false) => {
       const bookId = activeBookIdRef.current;
-      if (!bookId) return;
+      const bookKey = activeBookKeyRef.current;
+      if (!bookId || !bookKey) return;
 
       setActiveBook((prev) =>
         prev ? { ...prev, progress } : prev,
@@ -177,7 +242,7 @@ export function EbookApp() {
       setBooks((prev) =>
         prev.map((b) => (b.id === bookId ? { ...b, progress } : b)),
       );
-      scheduleProgressSave(bookId, progress, immediate);
+      scheduleProgressSave(bookId, bookKey, progress, immediate);
     },
     [],
   );
@@ -186,7 +251,7 @@ export function EbookApp() {
     return (
       <div className="app-loading">
         <div className="app-loading__spinner" />
-        <p>Đang tải thư viện...</p>
+        <p>{loadingMessage}</p>
       </div>
     );
   }

@@ -44,6 +44,17 @@ export async function deleteBook(id: string): Promise<void> {
   await db.delete("books", id);
 }
 
+export async function deleteBooksNotIn(ids: string[]): Promise<void> {
+  const db = await getDB();
+  const keep = new Set(ids);
+  const all = await db.getAll("books");
+  await Promise.all(
+    all
+      .filter((book) => !keep.has(book.id))
+      .map((book) => db.delete("books", book.id)),
+  );
+}
+
 export async function updateProgress(
   id: string,
   progress: Book["progress"],

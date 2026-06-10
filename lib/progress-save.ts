@@ -1,16 +1,23 @@
+import { pushSyncProgress } from "./progress-sync.client";
 import { updateProgress } from "./storage";
 import type { ReadingProgress } from "./types";
 
 let timer: ReturnType<typeof setTimeout> | null = null;
-let pending: { id: string; progress: ReadingProgress } | null = null;
+let pending: {
+  id: string;
+  bookKey: string;
+  progress: ReadingProgress;
+} | null = null;
 
 export function scheduleProgressSave(
   id: string,
+  bookKey: string,
   progress: ReadingProgress,
   immediate = false,
 ): void {
   pending = {
     id,
+    bookKey,
     progress: { ...progress, updatedAt: Date.now() },
   };
 
@@ -32,7 +39,9 @@ export async function flushProgressSave(): Promise<void> {
   }
   if (!pending) return;
 
-  const { id, progress } = pending;
+  const { id, bookKey, progress } = pending;
   pending = null;
+
   await updateProgress(id, progress);
+  void pushSyncProgress(bookKey, progress);
 }

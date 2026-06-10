@@ -15,5 +15,8 @@ RUN pnpm install
 COPY . .
 RUN pnpm build
 
+RUN mkdir -p uploads/books
+VOLUME ["/app/uploads"]
+
 EXPOSE 3000
 CMD ["pnpm", "start"]
