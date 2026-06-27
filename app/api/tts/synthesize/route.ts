@@ -9,16 +9,16 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: "Invalid JSON" }, { status: 400 });
+    return Response.json({ error: "INVALID_JSON" }, { status: 400 });
   }
 
   const text = body.text?.trim() ?? "";
   if (!text) {
-    return Response.json({ error: "Missing text" }, { status: 400 });
+    return Response.json({ error: "INVALID_TEXT" }, { status: 400 });
   }
 
   if (text.length > MAX_TTS_TEXT_LENGTH) {
-    return Response.json({ error: "Text too long" }, { status: 400 });
+    return Response.json({ error: "TEXT_TOO_LONG" }, { status: 400 });
   }
 
   const voice = resolveOnlineVoice(body.voice);
@@ -26,14 +26,20 @@ export async function POST(request: Request) {
 
   try {
     const audio = await synthesizeSpeechMp3(text, voice, rate);
-    return new Response(audio, {
+    return new Response(new Uint8Array(audio), {
       headers: {
         "Content-Type": "audio/mpeg",
-        "Cache-Control": "private, max-age=3600",
+        "Cache-Control": "public, max-age=86400",
       },
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "TTS failed";
-    return Response.json({ error: message }, { status: 503 });
+    const message = err instanceof Error ? err.message : "TTS_FAILED";
+    if (message === "INVALID_TEXT") {
+      return Response.json({ error: message }, { status: 400 });
+    }
+    if (message === "TEXT_TOO_LONG") {
+      return Response.json({ error: message }, { status: 400 });
+    }
+    return Response.json({ error: "TTS_FAILED" }, { status: 503 });
   }
 }
