@@ -57,7 +57,7 @@ export async function POST(request: Request) {
     await convertFileToEpub(inputPath, outputPath);
     const epub = await readFile(outputPath);
 
-    return new Response(epub, {
+    return new Response(new Uint8Array(epub), {
       headers: {
         "Content-Type": "application/epub+zip",
         "Content-Disposition": `attachment; filename="${safeBase}.epub"`,

@@ -26,7 +26,7 @@ export async function POST(request: Request) {
 
   try {
     const audio = await synthesizeSpeechMp3(text, voice, rate);
-    return new Response(audio, {
+    return new Response(new Uint8Array(audio), {
       headers: {
         "Content-Type": "audio/mpeg",
         "Cache-Control": "private, max-age=3600",
